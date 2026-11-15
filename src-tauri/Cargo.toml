@@ -1,6 +1,6 @@
 [package]
 name = "shion"
-version = "0.1.0"
+version = "0.2.0"
 description = "Shion - hafif, Rust tabanli Discord istemcisi"
 edition = "2021"
 
@@ -26,6 +26,8 @@ opus = "0.3"
 cpal = "0.15"
 chacha20poly1305 = "0.10"
 nnnoiseless = { version = "0.5", default-features = false }
+wasapi = "0.19"
+tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Diagnostics_ToolHelp"] }

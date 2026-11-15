@@ -26,6 +26,8 @@ pub struct VoiceCtl {
     pub ptt_pressed: AtomicBool,
     /// RNNoise gurultu engelleme
     pub noise: AtomicBool,
+    /// Kisi basi ses seviyesi (kullanici id -> carpan)
+    pub user_volume: Mutex<HashMap<u64, f32>>,
 }
 
 impl Default for VoiceCtl {
@@ -41,6 +43,7 @@ impl Default for VoiceCtl {
             ptt_mode: AtomicBool::new(false),
             ptt_pressed: AtomicBool::new(false),
             noise: AtomicBool::new(true),
+            user_volume: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -52,6 +55,71 @@ impl VoiceCtl {
     pub fn volume(&self) -> f32 {
         f32::from_bits(self.volume.load(Ordering::Relaxed))
     }
+    pub fn user_volume(&self, uid: u64) -> f32 {
+        self.user_volume.lock().unwrap().get(&uid).copied().unwrap_or(1.0)
+    }
+}
+
+/// Sistem sesi yakalama (yayin sesi): Shion ve alt surecleri HARIC tum sesler, 48 kHz stereo.
+/// Windows 10 2004+ "process loopback" ile — boylece sesli sohbet yayina yanki olarak gitmez.
+#[cfg(windows)]
+pub fn start_system_capture(mut sink: impl FnMut(Vec<f32>) + Send + 'static) -> Result<AudioHandle, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    std::thread::Builder::new()
+        .name("shion-sysaudio".into())
+        .spawn(move || {
+            let _ = wasapi::initialize_mta();
+            let setup = (|| -> Result<_, String> {
+                let fmt = wasapi::WaveFormat::new(32, 32, &wasapi::SampleType::Float, RATE as usize, 2, None);
+                // include_tree=false -> bu surec agacini HARIC tut
+                let mut client = wasapi::AudioClient::new_application_loopback_client(std::process::id(), false).map_err(|e| e.to_string())?;
+                let mode = wasapi::StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: 0 };
+                client.initialize_client(&fmt, &wasapi::Direction::Capture, &mode).map_err(|e| e.to_string())?;
+                let ev = client.set_get_eventhandle().map_err(|e| e.to_string())?;
+                let cap = client.get_audiocaptureclient().map_err(|e| e.to_string())?;
+                client.start_stream().map_err(|e| e.to_string())?;
+                Ok((client, ev, cap))
+            })();
+            let (client, ev, cap) = match setup {
+                Ok(x) => {
+                    let _ = ready_tx.send(Ok(()));
+                    x
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                    return;
+                }
+            };
+            let mut q: VecDeque<u8> = VecDeque::new();
+            while !stop2.load(Ordering::Relaxed) {
+                let _ = ev.wait_for_event(100); // ses yokken olay gelmez: zaman asimi normal
+                loop {
+                    match cap.get_next_packet_size() {
+                        Ok(Some(n)) if n > 0 => {
+                            if cap.read_from_device_to_deque(&mut q).is_err() {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                if q.len() >= 8 {
+                    let n = q.len() / 4 * 4;
+                    let bytes: Vec<u8> = q.drain(..n).collect();
+                    sink(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect());
+                }
+            }
+            let _ = client.stop_stream();
+        })
+        .map_err(|e| e.to_string())?;
+    ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "Ses yakalama zaman asimi".to_string())??;
+    Ok(AudioHandle { stop })
+}
+#[cfg(not(windows))]
+pub fn start_system_capture(_sink: impl FnMut(Vec<f32>) + Send + 'static) -> Result<AudioHandle, String> {
+    Err("Desteklenmiyor".into())
 }
 
 /// Tek kanalli lineer yeniden ornekleyici (bloklar arasi durumu korur).
@@ -414,5 +482,20 @@ mod tests {
         for w in out.windows(2) {
             assert!((w[1] - w[0] - 2.0).abs() < 1e-3, "{:?}", w);
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod sys_tests {
+    /// Gercek ses aygiti gerektirir: cargo test -- --ignored system_capture
+    #[test]
+    #[ignore]
+    fn system_capture_starts_and_stops() {
+        let got = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let g2 = got.clone();
+        let h = super::start_system_capture(move |p| { g2.fetch_add(p.len(), std::sync::atomic::Ordering::Relaxed); }).expect("baslamali");
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        drop(h);
+        println!("yakalanan ornek: {}", got.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

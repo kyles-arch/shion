@@ -2,7 +2,7 @@
 /* Shion — çoklu hesap, FakeNitro, gizli profil bilgileri, ses/arkadaş takibi, anahtar kelimeler,
    zamanlanmış mesajlar, taslaklar, oyun aktivitesi, kanal yedekleme, medya indirme, gürültü engelleme. */
 
-const PLUS_DEFAULTS = { noise: true, fakeNitro: true, gameDetect: true, keywords: [], scheduled: [], drafts: {}, watch: {}, vcNotify: true };
+const PLUS_DEFAULTS = { userVol: {}, streamAudio: true, screenQuality: "1080", noise: true, fakeNitro: true, gameDetect: true, keywords: [], scheduled: [], drafts: {}, watch: {}, vcNotify: true };
 for (const [k, v] of Object.entries(PLUS_DEFAULTS)) if (cfg[k] === undefined) cfg[k] = structuredClone(v);
 
 const lsGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || "null") ?? d; } catch { return d; } };
@@ -10,6 +10,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } ca
 
 /* Açılışta Rust tarafına ayarları gönder */
 function pushPlusSettings() {
+  for (const [id, v] of Object.entries(cfg.userVol)) invoke("set_user_volume", { userId: id, volume: v }).catch(() => {});
   invoke("set_noise", { on: !!cfg.noise }).catch(() => {});
   invoke("set_keywords", { words: cfg.keywords }).catch(() => {});
   invoke("set_game_detect", { on: !!cfg.gameDetect }).catch(() => {});
@@ -456,6 +457,17 @@ function plusGuildItems(g) {
 }
 
 function plusSettings(root, sec, toggle) {
+  updateSection(root);
+  const ms = micTestSection(root);
+  // hassasiyet kaydırıcısı değişince eşik çizgisini güncelle
+  root.addEventListener("input", () => ms._setThr());
+  const st = sec("Ekran paylaşımı");
+  const qr = h("div", "row", `<label>Yayın kalitesi<small>Büyük ekranlar bu boyuta küçültülür. Yavaş internette 720p seç.</small></label>`);
+  const qs = h("select", "inp"); qs.style.maxWidth = "200px";
+  qs.innerHTML = `<option value="720">720p 30 fps</option><option value="1080">1080p 30 fps</option><option value="1080-60">1080p 60 fps</option>`;
+  qs.value = cfg.screenQuality; qs.onchange = () => { cfg.screenQuality = qs.value; saveCfg(); applyScreenPreset(); toast("Bir sonraki yayında uygulanır"); };
+  qr.append(qs); st.append(qr);
+  toggle(st, "streamAudio", "Bilgisayar sesini paylaş", "Yayında oyun/müzik sesi de gider (sesli sohbet hariç tutulur)");
   const s = sec("Ekstra");
   toggle(s, "noise", "Gürültü engelleme 🎧", "Mikrofondaki klavye, fan ve arka plan sesini temizler (RNNoise, cihazında çalışır)", () => invoke("set_noise", { on: cfg.noise }).catch(() => {}));
   toggle(s, "fakeNitro", "FakeNitro ✨", "Nitro'n yoksa başka sunucuların / animasyonlu emojileri ve çıkartmaları bağlantı olarak gönderir", () => {});
@@ -472,4 +484,128 @@ function plusSettings(root, sec, toggle) {
   wr.append(wb); s.append(wr);
   const ar = h("div", "row", `<label>Hesaplar<small>Kayıtlı hesaplar arasında geçiş yap ya da yeni hesap ekle</small></label>`);
   const ab = h("button", "btn", "👥 Hesaplar"); ab.onclick = openAccounts; ar.append(ab); s.append(ar);
+}
+
+/* ------------------------------------------------------------------ */
+/* Kişi başı ses seviyesi                                              */
+/* ------------------------------------------------------------------ */
+function voiceUserItems(u) {
+  if (!u || u.id === S.me?.id) return [];
+  const v = S.vstates.get(u.id);
+  if (!v?.channel_id) return [];
+  const pct = Math.round((cfg.userVol[u.id] ?? 1) * 100);
+  return [{ label: `🔊 Ses seviyesi (%${pct})`, fn: () => openUserVolume(u) },
+    { label: cfg.userVol[u.id] === 0 ? "🔈 Yerel susturmayı kaldır" : "🔇 Yerel olarak sustur", fn: () => setUserVolume(u.id, cfg.userVol[u.id] === 0 ? 1 : 0) }, "-"];
+}
+function setUserVolume(id, v) {
+  if (Math.abs(v - 1) < 0.01) delete cfg.userVol[id]; else cfg.userVol[id] = v;
+  saveCfg();
+  invoke("set_user_volume", { userId: id, volume: v }).catch(() => {});
+  document.querySelectorAll(`.vuser[data-uid="${id}"]`).forEach((el) => el.classList.toggle("local-muted", v === 0));
+}
+function openUserVolume(u) {
+  const box = h("div", "uvol");
+  const cur = Math.round((cfg.userVol[u.id] ?? 1) * 100);
+  box.innerHTML = `<div class="uvol-head"><img src="${avatarUrl(u, 64)}"><b>${esc(dname(u))}</b><span class="uvol-val">%${cur}</span></div>`;
+  const r = h("input"); r.type = "range"; r.min = 0; r.max = 200; r.step = 5; r.value = cur;
+  r.oninput = () => { box.querySelector(".uvol-val").textContent = "%" + r.value; setUserVolume(u.id, r.value / 100); };
+  const reset = h("button", "btn small", "Sıfırla (%100)"); reset.onclick = () => { r.value = 100; r.oninput(); };
+  box.append(r, reset, h("p", "muted", "<small>Sadece senin duyduğun sesi değiştirir; Shion açıldığında hatırlanır.</small>"));
+  openModal("Kullanıcı ses seviyesi", box);
+}
+// Yerel susturulanları ses listesinde işaretle
+new MutationObserver(() => {
+  for (const [id, v] of Object.entries(cfg.userVol)) if (v === 0) document.querySelectorAll(`.vuser[data-uid="${id}"]:not(.local-muted)`).forEach((el) => el.classList.add("local-muted"));
+}).observe(document.body, { childList: true, subtree: true });
+
+/* ------------------------------------------------------------------ */
+/* Mikrofon testi                                                      */
+/* ------------------------------------------------------------------ */
+let micTestOn = false;
+function micTestSection(root) {
+  const s = h("div", "set-section", "<h3>Mikrofon testi</h3>");
+  const meter = h("div", "mic-meter", '<i class="lvl"></i><i class="thr"></i>');
+  const row = h("div", "row");
+  const lb = h("label", null, "Konuş ve seviyeyi izle<small>Yeşil çizgiyi geçen ses iletilir (hassasiyet ayarı). Kulaklık takılıysa kendi sesini de duyarsın.</small>");
+  const pb = h("label", "check", '<input type="checkbox"> Kendi sesimi duy');
+  const btn = h("button", "btn", "▶ Testi başlat");
+  const setThr = () => { meter.querySelector(".thr").style.left = Math.min(100, dbPct(cfg.threshold)) + "%"; };
+  setThr();
+  btn.onclick = async () => {
+    if (micTestOn) return stopMicTest(btn);
+    if (S.vc.state === "connected") return toast("Sesli kanaldayken test yapılamaz");
+    btn.disabled = true;
+    try {
+      await invoke("mic_test", { on: true, playback: pb.querySelector("input").checked });
+      micTestOn = true; btn.textContent = "■ Testi durdur";
+    } catch (e) { toast("Mikrofon: " + e); }
+    btn.disabled = false;
+  };
+  row.append(lb, pb, btn); s.append(row, meter);
+  s._setThr = setThr;
+  root.append(s);
+  // modal kapanınca testi durdur
+  const obs = new MutationObserver(() => { if (!s.isConnected || $("#modal").classList.contains("hidden")) { obs.disconnect(); stopMicTest(btn); } });
+  obs.observe($("#modal"), { attributes: true, attributeFilter: ["class"] });
+  return s;
+}
+// -60 dB .. 0 dB -> %0..100
+const dbPct = (rms) => Math.max(0, Math.min(100, (20 * Math.log10(Math.max(rms, 1e-6)) + 60) / 60 * 100));
+function stopMicTest(btn) {
+  if (!micTestOn) return;
+  micTestOn = false;
+  invoke("mic_test", { on: false, playback: false }).catch(() => {});
+  if (btn) btn.textContent = "▶ Testi başlat";
+  const l = $(".mic-meter .lvl"); if (l) l.style.width = "0";
+}
+listen("mic-level", (e) => {
+  const m = $(".mic-meter"); if (!m) return;
+  m.querySelector(".lvl").style.width = dbPct(e.payload.rms) + "%";
+  m.classList.toggle("on", !!e.payload.speaking);
+});
+
+/* ------------------------------------------------------------------ */
+/* Otomatik güncelleme                                                 */
+/* ------------------------------------------------------------------ */
+const UPD = { info: null, busy: false };
+async function checkUpdate(manual) {
+  try {
+    const u = await invoke("check_update");
+    UPD.info = u;
+    if (u) showUpdateBar(u);
+    else if (manual) toast("Shion güncel ✅");
+    return u;
+  } catch (e) { if (manual) toast("Güncelleme denetlenemedi: " + e); return null; }
+}
+function showUpdateBar(u) {
+  let bar = $("#update-bar");
+  if (!bar) { bar = h("div", "update-bar"); bar.id = "update-bar"; document.body.append(bar); }
+  bar.innerHTML = `<span>✨ Shion <b>${esc(u.version)}</b> hazır</span>`;
+  const go = h("button", "btn primary small", "Güncelle ve yeniden başlat");
+  const later = h("button", "btn small", "Sonra");
+  later.onclick = () => bar.remove();
+  go.onclick = () => installUpdate(bar);
+  bar.append(go, later);
+}
+async function installUpdate(bar) {
+  if (UPD.busy) return; UPD.busy = true;
+  const msg = bar?.querySelector("span");
+  const un = await listen("update-progress", (e) => {
+    const { got, total } = e.payload;
+    if (msg) msg.textContent = total ? `İndiriliyor… %${Math.round(got / total * 100)}` : `İndiriliyor… ${(got / 1048576).toFixed(1)} MB`;
+  });
+  try { saveDraft(); await invoke("install_update"); }
+  catch (e) { toast("Güncellenemedi: " + e); if (msg) msg.textContent = "Güncelleme başarısız"; }
+  finally { un(); UPD.busy = false; }
+}
+let updChecked = false;
+listen("gw-ready", () => { if (updChecked) return; updChecked = true; setTimeout(() => checkUpdate(false), 8000); });
+setInterval(() => checkUpdate(false), 6 * 3600 * 1000);
+function updateSection(root) {
+  const s = h("div", "set-section", "<h3>Güncelleme</h3>");
+  const r = h("div", "row", `<label>Shion sürümü <b class="ver">…</b><small>Yeni sürümler GitHub'dan imzalı olarak iner (kyles-arch/shion)</small></label>`);
+  invoke("app_version").then((v) => { r.querySelector(".ver").textContent = v; }).catch(() => {});
+  const b = h("button", "btn", "Güncellemeleri denetle");
+  b.onclick = async () => { b.disabled = true; await checkUpdate(true); b.disabled = false; };
+  r.append(b); s.append(r); root.append(s);
 }

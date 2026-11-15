@@ -636,3 +636,15 @@ body.ptt-down #me-panel .me-av img { box-shadow: 0 0 0 3px #23a55a; }
 .kw-row { padding: 8px; border-radius: 8px; cursor: pointer; border-bottom: 1px solid var(--border); } .kw-row:hover { background: var(--bg-3); }
 .sched textarea { resize: vertical; } .sched-quick { display: flex; gap: 6px; margin: 6px 0; }
 .sched-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--bg-2); border-radius: 8px; margin: 4px 0; } .sched-row > div { flex: 1; min-width: 0; }
+
+/* ===== ses seviyesi + mikrofon testi ===== */
+.vuser.local-muted .name { text-decoration: line-through; opacity: .6; }
+.uvol { min-width: 320px; } .uvol-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.uvol-head img { width: 40px; height: 40px; border-radius: 50%; } .uvol-head b { flex: 1; } .uvol-val { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
+.uvol input[type=range] { width: 100%; margin-bottom: 10px; }
+.mic-meter { position: relative; height: 10px; border-radius: 6px; background: var(--bg-3); overflow: hidden; margin-top: 8px; }
+.mic-meter .lvl { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--muted); transition: width .08s linear; }
+.mic-meter.on .lvl { background: #23a55a; }
+.mic-meter .thr { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #23a55a; }
+
+.update-bar { position: fixed; right: 16px; bottom: 16px; z-index: 900; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 12px; background: var(--bg-1); border: 1px solid var(--accent); box-shadow: var(--shadow); font-size: 13px; }

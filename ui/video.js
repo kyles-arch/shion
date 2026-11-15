@@ -12,6 +12,9 @@ const V = {
 };
 const CAM = { w: 1280, h: 720, fps: 30, bitrate: 2_500_000 };
 const SCR = { w: 1920, h: 1080, fps: 30, bitrate: 6_000_000 };
+const SCR_PRESETS = { "720": [1280, 720, 30, 3_500_000], "1080": [1920, 1080, 30, 6_000_000], "1080-60": [1920, 1080, 60, 8_000_000] };
+function applyScreenPreset() { const p = SCR_PRESETS[cfg.screenQuality] || SCR_PRESETS["1080"]; [SCR.w, SCR.h, SCR.fps, SCR.bitrate] = p; }
+applyScreenPreset();
 
 /* ------------------------------------------------------------------ */
 /* Kodlayıcı: MediaStreamTrack -> H264 Annex-B -> Rust                 */
@@ -21,7 +24,8 @@ const even = (n) => Math.max(2, n & ~1);
 async function pickCodec(w, h, fps, bitrate) {
   if (!("VideoEncoder" in window)) throw new Error("Bu sistemde WebCodecs yok");
   // Kısıtlı baseline: Discord istemcilerinin hepsi çözebilir
-  for (const codec of ["avc1.42E02A", "avc1.42E028", "avc1.42E01F"]) {
+  // 4.2 -> 1080p60; 5.1 -> 1440p/4K (ölçekleme başarısız olursa)
+  for (const codec of ["avc1.42E02A", "avc1.42E028", "avc1.42E01F", "avc1.42E033", "avc1.640033"]) {
     for (const hw of ["prefer-hardware", "no-preference"]) {
       const c = { codec, width: w, height: h, bitrate, framerate: fps, latencyMode: "realtime", hardwareAcceleration: hw, avc: { format: "annexb" } };
       try { if ((await VideoEncoder.isConfigSupported(c)).supported) return c; } catch {}
@@ -33,7 +37,19 @@ async function pickCodec(w, h, fps, bitrate) {
 class Sender {
   constructor(target, track, opts, onInfo) {
     this.target = target; this.track = track; this.opts = opts; this.onInfo = onInfo;
-    this.needKey = true; this.n = 0; this.last = 0; this.stopped = false; this.size = null; this.sent = 0;
+    this.needKey = true; this.n = 0; this.last = 0; this.stopped = false; this.size = null; this.sent = 0; this.lastKey = 0;
+  }
+  /** İzleyicilerden gelen anahtar kare isteği (PLI) — saniyede en fazla bir kez. */
+  requestKey() { if (performance.now() - this.lastKey > 1000) this.needKey = true; }
+  /** Büyük ekranları (1440p, 4K, ultra geniş) en-boy oranını koruyarak sınıra sığdır. */
+  fit(fw, fh) {
+    const s = Math.min(1, (this.opts.maxW || this.opts.w) / fw, (this.opts.maxH || this.opts.h) / fh);
+    return [even(Math.round(fw * s)), even(Math.round(fh * s))];
+  }
+  scaled(frame, w, h) {
+    if (!this.cv || this.cv.width !== w || this.cv.height !== h) { this.cv = new OffscreenCanvas(w, h); this.cx = this.cv.getContext("2d", { alpha: false, desynchronized: true }); }
+    this.cx.drawImage(frame, 0, 0, w, h);
+    return new VideoFrame(this.cv, { timestamp: frame.timestamp });
   }
   async configure(w, h) {
     this.size = [w, h];
@@ -63,11 +79,13 @@ class Sender {
           const now = performance.now();
           if (now - this.last < gap * 0.85 || (this.enc && this.enc.encodeQueueSize > 2)) continue;
           this.last = now;
-          const w = even(frame.displayWidth), h = even(frame.displayHeight);
+          const [w, h] = this.fit(frame.displayWidth, frame.displayHeight);
           if (!this.size || this.size[0] !== w || this.size[1] !== h) await this.configure(w, h);
           if (this.enc.state !== "configured") continue;
-          const f = w === frame.displayWidth && h === frame.displayHeight ? frame : new VideoFrame(frame, { visibleRect: { x: 0, y: 0, width: w, height: h } });
+          const big = w < even(frame.displayWidth) || h < even(frame.displayHeight);
+          const f = big ? this.scaled(frame, w, h) : w === frame.displayWidth && h === frame.displayHeight ? frame : new VideoFrame(frame, { visibleRect: { x: 0, y: 0, width: w, height: h } });
           const key = this.needKey || this.n % (this.opts.fps * 4) === 0;
+          if (key) this.lastKey = now;
           this.needKey = false; this.n++;
           this.enc.encode(f, { keyFrame: key });
           if (f !== frame) f.close();
@@ -84,8 +102,8 @@ class Sender {
 }
 listen("video-keyframe", (e) => {
   const k = e.payload.key;
-  if (k === "camera" && V.cam) V.cam.sender.needKey = true;
-  if (V.screen && k === V.screen.key) V.screen.sender.needKey = true;
+  if (k === "camera" && V.cam) V.cam.sender.requestKey();
+  if (V.screen && k === V.screen.key) V.screen.sender.requestKey();
 });
 
 /* ------------------------------------------------------------------ */
@@ -237,7 +255,7 @@ async function toggleScreen() {
   if (!inVoice()) return toast("Önce bir ses kanalına bağlan");
   let stream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: SCR.w }, height: { max: SCR.h }, frameRate: { ideal: SCR.fps, max: SCR.fps } }, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: "include" });
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: SCR.w }, height: { max: SCR.h }, frameRate: { ideal: SCR.fps, max: SCR.fps } }, audio: false }); // ses Rust'ta yakalanır (Shion hariç sistem sesi)
   } catch (e) { if (e?.name !== "NotAllowedError") toast("Ekran yakalanamadı: " + (e.message || e)); return; }
   const track = stream.getVideoTracks()[0];
   try { track.contentHint = "detail"; } catch {}
@@ -251,34 +269,23 @@ async function toggleScreen() {
   renderVoicePanel();
   toast("📡 Yayın sunucusuna bağlanılıyor…");
 }
-/* Yayın sesi: 48 kHz stereo PCM -> Rust (Opus) */
-function startStreamAudio(sc) {
-  const at = sc.stream.getAudioTracks()[0];
-  if (!at) return false;
-  const ctx = new AudioContext({ sampleRate: 48000 });
-  const src = ctx.createMediaStreamSource(new MediaStream([at]));
-  const proc = ctx.createScriptProcessor(2048, 2, 2);
-  const mute = ctx.createGain(); mute.gain.value = 0; // kendi hoparlörüne geri çalma
-  proc.onaudioprocess = (e) => {
-    const L = e.inputBuffer.getChannelData(0), R = e.inputBuffer.numberOfChannels > 1 ? e.inputBuffer.getChannelData(1) : L;
-    const out = new Float32Array(L.length * 2);
-    for (let i = 0; i < L.length; i++) { out[i * 2] = L[i]; out[i * 2 + 1] = R[i]; }
-    invoke("stream_audio", new Uint8Array(out.buffer), { headers: { "x-target": sc.key } }).catch(() => {});
-  };
-  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
-  sc.audio = { ctx, proc };
-  return true;
+/* Yayın sesi: Rust, Windows'un "bu uygulama hariç" yakalamasıyla sistem sesini alır —
+   böylece sesli sohbetteki kişilerin sesi yayına yankı olarak gitmez. */
+async function startStreamAudio(sc) {
+  if (cfg.streamAudio === false) return "kapalı";
+  try { await invoke("system_audio", { key: sc.key, on: true }); sc.audio = true; return "sesli"; }
+  catch (e) { console.warn("yayın sesi:", e); return "ses açılamadı"; }
 }
 async function startScreenSender() {
   const sc = V.screen; if (!sc || sc.started) return;
   sc.started = true;
-  try { await sc.sender.start(); toast(startStreamAudio(sc) ? "🔴 Yayındasın (sesli)" : "🔴 Yayındasın (ses paylaşılmıyor)"); }
+  try { await sc.sender.start(); const a = await startStreamAudio(sc); toast(a === "sesli" ? "🔴 Yayındasın (sesli)" : `🔴 Yayındasın (ses: ${a})`); }
   catch (e) { toast("Yayın: " + e.message); stopScreen(); }
 }
 function stopScreen(silent) {
   const sc = V.screen; if (!sc) return;
   sc.sender.stop(); sc.stream.getTracks().forEach((t) => t.stop());
-  if (sc.audio) { try { sc.audio.proc.disconnect(); sc.audio.ctx.close(); } catch {} }
+  if (sc.audio) invoke("system_audio", { key: sc.key, on: false }).catch(() => {});
   V.screen = null; removeTile("self-live");
   if (silent !== true) invoke("stop_stream", { key: sc.key }).catch(() => {});
   renderVoicePanel();
@@ -294,8 +301,9 @@ async function watchStream(uid) {
   const v = S.vstates.get(uid);
   if (!v?.self_stream) return toast("Bu kişi şu an yayında değil");
   if (S.vc.channel_id !== v.channel_id || S.vc.state !== "connected") {
+    V.pendingWatch = uid; // bağlanınca otomatik izle
     await joinVoice(v.guild_id || null, v.channel_id);
-    toast("Önce kanala bağlanılıyor — bağlanınca tekrar İzle'ye bas");
+    toast("📡 Kanala bağlanılıyor, yayın birazdan açılacak…");
     return;
   }
   const key = streamKeyFor(v);
@@ -339,7 +347,12 @@ listen("stream-status", (e) => {
 });
 listen("video-end", (e) => removeTile((e.payload.kind === 1 ? "live:" : "cam:") + e.payload.user_id));
 listen("voice-status", (e) => {
+  if (e.payload.state === "connected" && V.pendingWatch) {
+    const uid = V.pendingWatch; V.pendingWatch = null;
+    setTimeout(() => watchStream(uid), 400);
+  }
   if (e.payload.state === "disconnected" || e.payload.state === "error") {
+    V.pendingWatch = null;
     stopCamera(true); stopScreen(true);
     V.watching.clear();
     for (const id of [...V.tiles.keys()]) removeTile(id);

@@ -6,7 +6,7 @@
 
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::mpsc::UnboundedSender;
@@ -114,87 +114,153 @@ pub fn packetize_h264(frame: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-/// Gelen RTP yuklerinden kareleri yeniden olusturur.
+/// Yarim kare: genisletilmis sira no -> (yuk, marker)
 #[derive(Default)]
+struct Asm {
+    ts: u32,
+    pkts: BTreeMap<i64, (Vec<u8>, bool)>,
+}
+
+/// Gelen RTP yuklerinden kareleri yeniden olusturur. Sirasi karisan paketleri bekler
+/// (internette olagan); gercek kayipta kareyi atar ve anahtar kare ister.
 pub struct Depacketizer {
-    ts: Option<u32>,
-    last_seq: Option<u16>,
-    buf: Vec<u8>,
-    broken: bool,
-    in_fu: bool,
-    /// son anahtar kareden beri kayip var mi (PLI istemek icin)
+    /// en yuksek genisletilmis sira no (16 bit tasmasina karsi)
+    high: Option<i64>,
+    /// son tamamlanan/atilan karenin son paketi
+    done_end: Option<i64>,
+    frames: Vec<Asm>,
+    /// anahtar kare gerekli mi (PLI gonderilir). Baslangicta true: yayina ortadan katilinca
+    /// ilk kareler delta olur ve anahtar kare istenmezse goruntu hic gelmez.
     pub need_key: bool,
 }
 
+impl Default for Depacketizer {
+    fn default() -> Self {
+        Self { high: None, done_end: None, frames: Vec::new(), need_key: true }
+    }
+}
+
+const MAX_PENDING_FRAMES: usize = 5;
+
+fn is_start(p: &[u8]) -> bool {
+    match p.first().map(|b| b & 0x1f) {
+        Some(1..=24) => true,
+        Some(28) => p.len() >= 2 && p[1] & 0x80 != 0,
+        _ => false,
+    }
+}
+
+/// Paket yuklerinden Annex-B kare. Bozuk yapi -> None.
+fn assemble(pkts: &BTreeMap<i64, (Vec<u8>, bool)>) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut in_fu = false;
+    for (payload, _) in pkts.values() {
+        if payload.is_empty() {
+            continue; // dolgu paketi
+        }
+        match payload[0] & 0x1f {
+            1..=23 => {
+                buf.extend_from_slice(&[0, 0, 0, 1]);
+                buf.extend_from_slice(payload);
+            }
+            24 => {
+                let mut i = 1;
+                while i + 2 <= payload.len() {
+                    let n = u16::from_be_bytes([payload[i], payload[i + 1]]) as usize;
+                    i += 2;
+                    if i + n > payload.len() {
+                        return None;
+                    }
+                    buf.extend_from_slice(&[0, 0, 0, 1]);
+                    buf.extend_from_slice(&payload[i..i + n]);
+                    i += n;
+                }
+            }
+            28 if payload.len() >= 2 => {
+                let (start, end) = (payload[1] & 0x80 != 0, payload[1] & 0x40 != 0);
+                if start {
+                    buf.extend_from_slice(&[0, 0, 0, 1, (payload[0] & 0xe0) | (payload[1] & 0x1f)]);
+                    in_fu = true;
+                } else if !in_fu {
+                    return None;
+                }
+                buf.extend_from_slice(&payload[2..]);
+                if end {
+                    in_fu = false;
+                }
+            }
+            _ => return None,
+        }
+    }
+    if buf.is_empty() { None } else { Some(buf) }
+}
+
 impl Depacketizer {
-    /// Paketi ekle; kare tamamlandiysa (marker) Annex-B kareyi dondur.
-    pub fn push(&mut self, seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Option<Vec<u8>> {
-        if let Some(l) = self.last_seq {
-            if seq != l.wrapping_add(1) {
-                // kayip ya da sirasiz paket: bu kareyi at
-                self.broken = true;
-                self.need_key = true;
-            }
+    fn ext(&mut self, seq: u16) -> i64 {
+        let e = match self.high {
+            None => seq as i64,
+            Some(h) => h + (seq.wrapping_sub(h as u16) as i16) as i64,
+        };
+        if self.high.map_or(true, |h| e > h) {
+            self.high = Some(e);
         }
-        self.last_seq = Some(seq);
-        if self.ts != Some(ts) {
-            if self.ts.is_some() && !self.buf.is_empty() {
-                // onceki kare marker'siz bitti -> eksik
-                self.need_key = true;
-            }
-            self.ts = Some(ts);
-            self.buf.clear();
-            self.broken = false;
-            self.in_fu = false;
-        }
-        if !payload.is_empty() {
-            let typ = payload[0] & 0x1f;
-            match typ {
-                1..=23 => {
-                    self.buf.extend_from_slice(&[0, 0, 0, 1]);
-                    self.buf.extend_from_slice(payload);
-                }
-                24 => {
-                    // STAP-A
-                    let mut i = 1;
-                    while i + 2 <= payload.len() {
-                        let n = u16::from_be_bytes([payload[i], payload[i + 1]]) as usize;
-                        i += 2;
-                        if i + n > payload.len() {
-                            self.broken = true;
-                            break;
-                        }
-                        self.buf.extend_from_slice(&[0, 0, 0, 1]);
-                        self.buf.extend_from_slice(&payload[i..i + n]);
-                        i += n;
-                    }
-                }
-                28 if payload.len() >= 2 => {
-                    let (start, end) = (payload[1] & 0x80 != 0, payload[1] & 0x40 != 0);
-                    if start {
-                        self.buf.extend_from_slice(&[0, 0, 0, 1, (payload[0] & 0xe0) | (payload[1] & 0x1f)]);
-                        self.in_fu = true;
-                    } else if !self.in_fu {
-                        self.broken = true;
-                    }
-                    self.buf.extend_from_slice(&payload[2..]);
-                    if end {
-                        self.in_fu = false;
-                    }
-                }
-                _ => self.broken = true,
-            }
-        }
+        e
+    }
+
+    /// Kare tamam mi: marker var, araliksiz, basi dogru.
+    fn complete(&self, a: &Asm) -> Option<i64> {
+        let (&last, (_, marker)) = a.pkts.iter().next_back()?;
         if !marker {
             return None;
         }
-        let frame = std::mem::take(&mut self.buf);
-        self.ts = None;
-        if self.broken || frame.is_empty() {
-            self.broken = false;
-            self.need_key = true;
+        let (&first, (fp, _)) = a.pkts.iter().next()?;
+        if (last - first + 1) as usize != a.pkts.len() {
             return None;
         }
+        let starts_right = self.done_end == Some(first - 1) || is_start(fp);
+        if starts_right { Some(last) } else { None }
+    }
+
+    /// Paketi ekle; bir kare tamamlandiysa Annex-B kareyi dondur.
+    pub fn push(&mut self, seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Option<Vec<u8>> {
+        let e = self.ext(seq);
+        if self.done_end.map_or(false, |d| e <= d) {
+            return None; // gec kalan / tekrar paket
+        }
+        let idx = match self.frames.iter().position(|f| f.ts == ts) {
+            Some(i) => i,
+            None => {
+                self.frames.push(Asm { ts, pkts: BTreeMap::new() });
+                self.frames.len() - 1
+            }
+        };
+        self.frames[idx].pkts.insert(e, (payload.to_vec(), marker));
+        // Cok fazla yarim kare: en eskiyi kayip say
+        if self.frames.len() > MAX_PENDING_FRAMES {
+            let old = self.frames.remove(0);
+            if let Some((&last, _)) = old.pkts.iter().next_back() {
+                self.done_end = Some(self.done_end.map_or(last, |d| d.max(last)));
+            }
+            self.need_key = true;
+        }
+        // Tamamlanan kareyi bul (siraya gore once en eskiler)
+        let mut order: Vec<usize> = (0..self.frames.len()).collect();
+        order.sort_by_key(|&i| self.frames[i].pkts.keys().next().copied().unwrap_or(i64::MAX));
+        let hit = order.into_iter().find_map(|i| self.complete(&self.frames[i]).map(|end| (i, end)))?;
+        let (i, end) = hit;
+        let asm = self.frames.remove(i);
+        let first = *asm.pkts.keys().next().unwrap();
+        // Bu kareden once baslayan yarim kareler artik tamamlanamaz -> kayip
+        let before = self.frames.len();
+        self.frames.retain(|f| f.pkts.keys().next().map_or(false, |&k| k > end));
+        if self.frames.len() != before || self.done_end.map_or(false, |d| d + 1 < first) {
+            self.need_key = true;
+        }
+        self.done_end = Some(end);
+        let Some(frame) = assemble(&asm.pkts) else {
+            self.need_key = true;
+            return None;
+        };
         if is_keyframe(&frame) {
             self.need_key = false;
         } else if self.need_key {
@@ -402,13 +468,43 @@ mod tests {
             }
             out
         };
+        assert!(d.need_key, "baslangicta anahtar kare istenmeli");
+        assert!(send(&mut d, &delta, 0, None).is_none(), "anahtar kareden once delta atilmali");
         assert!(send(&mut d, &key, 1, None).is_some());
+        assert!(!d.need_key);
         assert!(send(&mut d, &delta, 2, None).is_some());
         assert!(send(&mut d, &delta, 3, Some(1)).is_none(), "kayipli kare atilmali");
-        assert!(d.need_key);
         assert!(send(&mut d, &delta, 4, None).is_none(), "anahtar kare beklenmeli");
+        assert!(d.need_key);
         assert!(send(&mut d, &key, 5, None).is_some());
         assert!(!d.need_key);
+    }
+
+    #[test]
+    fn depacketizer_tolerates_reordering_and_wraparound() {
+        let key = frame(&[vec![0x67, 1], big_nal(5, 4000)]);
+        let delta = frame(&[big_nal(1, 3000)]);
+        let mut d = Depacketizer::default();
+        let mut seq = 65_530u16; // 16 bit tasmasi kare ortasinda
+        let mut got = 0;
+        for (n, (f, ts)) in [(&key, 10u32), (&delta, 20), (&delta, 30), (&key, 40)].into_iter().enumerate() {
+            let pk = packetize_h264(f);
+            let mut order: Vec<usize> = (0..pk.len()).collect();
+            // sirayi karistir: komsulari takas et, sonuncuyu (marker) en basa al
+            for i in (0..order.len().saturating_sub(1)).step_by(2) { order.swap(i, i + 1); }
+            if n % 2 == 1 { order.rotate_right(1); }
+            for i in order {
+                if let Some(fr) = d.push(seq.wrapping_add(i as u16), ts, i + 1 == pk.len(), &pk[i]) {
+                    assert_eq!(split_nals(&fr), split_nals(f));
+                    got += 1;
+                }
+            }
+            seq = seq.wrapping_add(pk.len() as u16);
+        }
+        assert_eq!(got, 4, "sirasi karisan paketlerle tum kareler tamamlanmali");
+        assert!(!d.need_key);
+        // tekrar gelen eski paket yok sayilir
+        assert!(d.push(seq.wrapping_sub(1), 40, true, &[0x41, 1]).is_none());
     }
 
     #[test]

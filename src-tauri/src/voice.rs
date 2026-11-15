@@ -408,6 +408,8 @@ async fn session(app: &AppHandle, info: &VoiceInfo, ctl: Arc<VoiceCtl>, hub: &Vi
                 dec.1.process(&l, &mut lo);
                 dec.2.process(&r, &mut ro);
                 let ch = out_info.channels as usize;
+                let uv = ctl.user_volume(uid);
+                if uv != 1.0 { lo.iter_mut().chain(ro.iter_mut()).for_each(|s| *s *= uv); }
                 let mut m = mixer.lock().unwrap();
                 let tr = m.entry(pssrc).or_insert_with(|| Track { buf: Default::default(), primed: false });
                 for i in 0..lo.len().min(ro.len()) {

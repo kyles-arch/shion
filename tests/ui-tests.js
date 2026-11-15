@@ -729,6 +729,65 @@ export async function run() {
     closeModal();
   });
 
+  await test("kisi basi ses seviyesi (sag tik)", async () => {
+    closeModal();
+    const v = [...S.vstates.values()].find((x) => x.user_id !== S.me.id && x.channel_id);
+    assert(v, "seste kimse yok");
+    const u = v.user;
+    memberMenu({ clientX: 100, clientY: 100, target: document.body }, u); await sleep(20);
+    await lastMenuClick("Ses seviyesi");
+    const r = q("#modal .uvol input[type=range]");
+    r.value = 150; r.dispatchEvent(new Event("input")); await sleep(10);
+    assert(called("set_user_volume").pop()[1].volume === 1.5 && cfg.userVol[u.id] === 1.5, "seviye kaydedilmedi");
+    closeModal();
+    memberMenu({ clientX: 100, clientY: 100, target: document.body }, u); await sleep(20);
+    await lastMenuClick("Yerel olarak sustur");
+    assert(called("set_user_volume").pop()[1].volume === 0, "susturulmadi");
+    memberMenu({ clientX: 100, clientY: 100, target: document.body }, u); await sleep(20);
+    await lastMenuClick("Yerel susturmayı kaldır");
+    assert(!(u.id in cfg.userVol), "sifirlanmadi");
+  });
+
+  await test("mikrofon testi: seviye gostergesi", async () => {
+    openModal("Ayarlar", settingsView()); await sleep(60);
+    const btn = [...document.querySelectorAll("#modal .btn")].find((b) => b.textContent.includes("Testi başlat"));
+    assert(btn, "test dugmesi yok");
+    btn.click(); await sleep(250);
+    const lvl = q(".mic-meter .lvl");
+    assert(parseFloat(lvl.style.width) > 50 && q(".mic-meter").classList.contains("on"), "seviye: " + lvl.style.width);
+    closeModal(); await sleep(30);
+    assert(called("mic_test").pop()[1].on === false, "modal kapaninca test durmadi");
+  });
+
+  await test("ekran paylasimi: buyuk ekran olceklenir", async () => {
+    const sd = new Sender("x", null, SCR);
+    const cases = [[2560, 1440, 1920, 1080], [3840, 2160, 1920, 1080], [3440, 1440, 1920, 804], [1366, 768, 1366, 768], [1081, 721, 1080, 720]];
+    for (const [w, hh, ew, eh] of cases) { const [a, b] = sd.fit(w, hh); assert(a === ew && b === eh, `${w}x${hh} -> ${a}x${b}, beklenen ${ew}x${eh}`); }
+    // gercek olcekleme + kodlama
+    const cv = new OffscreenCanvas(2560, 1440); cv.getContext("2d").fillRect(0, 0, 10, 10);
+    const fr = new VideoFrame(cv, { timestamp: 0 });
+    const out = sd.scaled(fr, 1920, 1080); fr.close();
+    assert(out.displayWidth === 1920 && out.displayHeight === 1080, "olceklenmis kare " + out.displayWidth);
+    out.close();
+    sd.lastKey = performance.now(); sd.needKey = false; sd.requestKey();
+    assert(!sd.needKey, "PLI siniri calismiyor");
+    sd.lastKey = performance.now() - 2000; sd.requestKey();
+    assert(sd.needKey, "PLI anahtar kare istemedi");
+  });
+
+  await test("guncelleme: denetle + bildirim cubugu", async () => {
+    closeModal();
+    window.__mockUpdate = null;
+    assert((await checkUpdate(true)) === null && q("#toast").textContent.includes("güncel"), "guncel mesaji yok");
+    window.__mockUpdate = { version: "0.3.0", current: "0.2.0", notes: "yeni" };
+    await checkUpdate(false);
+    const bar = q("#update-bar");
+    assert(bar && bar.textContent.includes("0.3.0"), "cubuk yok");
+    bar.querySelector(".btn.primary").click(); await sleep(50);
+    assert(called("install_update").length === 1, "kurulum cagrilmadi");
+    bar.remove(); window.__mockUpdate = null;
+  });
+
   await test("yatay tasma yok", async () => {
     assert(document.documentElement.scrollWidth <= innerWidth + 1, "scrollWidth " + document.documentElement.scrollWidth);
   });

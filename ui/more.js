@@ -442,6 +442,7 @@ async function editRoles(g, u) {
 function memberMenu(e, u) {
   const g = curGuild();
   const items = [{ label: "👤 Profil", fn: () => openPopout(e.target.closest("[data-pop]") || e.target, u.id) }];
+  items.push(...voiceUserItems(u));
   if (u.id !== S.me?.id) items.push({ label: "💬 Mesaj gönder", fn: () => openDmWith(u) }, { label: "🏷 Yerel takma ad", fn: () => setNickname(u) });
   if (g) {
     const mods = [];

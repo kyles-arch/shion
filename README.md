@@ -52,15 +52,25 @@ Electron yerine **Tauri 2** (sistemdeki WebView2) + **Rust** arka uç. Gateway (
 - **Oyun aktivitesi** 🎮 — açık oyun Discord'un oyun listesine göre algılanır, profilinde "Oynuyor" olarak görünür.
 - **Kanal yedekleme** — kanala sağ tık → tüm geçmiş HTML veya JSON olarak `İndirilenler\Shion` klasörüne.
 - **Medya indirme** — mesajdaki resim/emoji/çıkartmaya sağ tık → İndir / bağlantıyı kopyala.
+- **Kişi başı ses seviyesi** — sesteki kişiye sağ tık → %0–200 ses ya da yerel susturma (hatırlanır).
+- **Mikrofon testi** — Ayarlar → seviye göstergesi + hassasiyet çizgisi, istersen kendi sesini duy.
+- **Otomatik güncelleme** — yeni sürümler [GitHub Releases](https://github.com/kyles-arch/shion/releases)'tan imzalı olarak iner; Shion açılışta denetler, tek tıkla kurar.
 
-**Bilinen sınırlar:** ses/kamera/yayın Discord protokolüne göre yazıldı ama gerçek hesapla henüz denenmedi. Davetle katılırken Discord captcha isterse Shion bunu çözemez; daveti tarayıcıda açmayı önerir. Otomatik güncelleme yok (bir güncelleme sunucusu/GitHub deposu gerekir) ve exe imzasız olduğu için Windows SmartScreen uyarısı çıkar.
+### Ekran paylaşımı (0.2.0 düzeltmeleri)
+- İzlemeye başlayınca yayıncıdan hemen anahtar kare istenir (önceden siyah ekranda kalabiliyordu).
+- Sırası karışan paketler artık bekleniyor (önceden her karışıklıkta kare atılıp görüntü takılıyordu).
+- 1440p / 4K / ultra geniş ekranlar seçilen kaliteye (720p, 1080p30, 1080p60) küçültülüyor; önceden kodlayıcı hiç başlamıyordu.
+- Yayın sesi Windows'un "bu uygulama hariç" yakalamasıyla alınıyor: sesli sohbet yayına yankı olarak gitmiyor.
+- Kanalda değilken CANLI'ya basınca önce bağlanıp yayını otomatik açıyor.
+
+**Bilinen sınırlar:** ses/kamera/yayın Discord protokolüne göre yazıldı ama gerçek hesapla henüz denenmedi. Davetle katılırken Discord captcha isterse Shion bunu çözemez; daveti tarayıcıda açmayı önerir. Exe kod imzalama sertifikasıyla imzalı olmadığı için ilk kurulumda Windows SmartScreen uyarısı çıkar (güncellemeler ise ayrı bir anahtarla imzalı ve doğrulanıyor).
 
 ## Testler
 ```bash
-cd src-tauri && cargo test          # 36 Rust birim testi (izinler, mesaj kaydı, okuma durumu, anket oyları, anahtar kelimeler, DPAPI, RTP şifreleme, H264 paketleme, RTCP, DAVE, Opus, Ogg/sesli mesaj, gürültü engelleme, oyun algılama, HTML yedek, yeniden örnekleme)
+cd src-tauri && cargo test          # 37 Rust birim testi (sıralama toleranslı H264 birleştirme, izinler, mesaj kaydı, okuma durumu, anket oyları, anahtar kelimeler, DPAPI, RTP şifreleme, H264 paketleme, RTCP, DAVE, Opus, Ogg/sesli mesaj, gürültü engelleme, oyun algılama, HTML yedek, yeniden örnekleme)
 node tests/serve.mjs                # arayüzü sahte Discord verisiyle http://localhost:5174 adresinde açar
 ```
-Tarayıcı konsolunda arayüz testleri (62 senaryo; çoklu hesap, FakeNitro, gizli profil, ses kaydı, taslak, zamanlama, yedekleme, davet, slash, anket, sesli mesaj kaydı, moderasyon ve WebCodecs ile gerçek H264 kodlama→çözme dahil): `await (await import('/__test/ui-tests.js')).run()`
+Tarayıcı konsolunda arayüz testleri (66 senaryo; güncelleme, mikrofon testi, kişi başı ses, ekran ölçekleme, çoklu hesap, FakeNitro, gizli profil, ses kaydı, taslak, zamanlama, yedekleme, davet, slash, anket, sesli mesaj kaydı, moderasyon ve WebCodecs ile gerçek H264 kodlama→çözme dahil): `await (await import('/__test/ui-tests.js')).run()`
 
 ## Derleme
 Gerekenler: Node.js, [Rust](https://rustup.rs) (MSVC toolchain), Visual Studio C++ Build Tools, WebView2 (Windows 11'de hazır).
@@ -73,3 +83,16 @@ npm run build    # src-tauri/target/release/shion.exe + src-tauri/target/release
 
 ## Uyarı
 Üçüncü parti istemciler Discord Hizmet Şartları'na aykırıdır; hesabın kısıtlanabilir veya banlanabilir. Token `%APPDATA%\dev.shion.client\session.dat` içinde DPAPI ile şifreli saklanır (sadece bu Windows kullanıcısı çözebilir; "Beni hatırla" kapalıysa hiç saklanmaz). Çeviri için mesaj metni Google Çeviri'ye gönderilir (sadece 🌐'ye bastığında).
+
+## Yeni sürüm yayınlama
+1. `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json` içindeki sürümü artır.
+2. İmza anahtarıyla derle (anahtar depoda değil, `%USERPROFILE%\.tauri\shion-updater.key`):
+   ```powershell
+   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\shion-updater.key" -Raw
+   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+   npm run build
+   ```
+3. `node scripts/latest-json.mjs` → `latest.json` üretir.
+4. GitHub'da `vX.Y.Z` sürümü oluştur; `Shion_X.Y.Z_x64-setup.exe`, `.sig` dosyası ve `latest.json` ekle. Açık olan tüm Shion'lar güncellemeyi görür.
+
+⚠ İmza anahtarını kaybedersen eski kurulumlar yeni sürümleri kabul etmez — `shion-updater.key` dosyasını yedekle.

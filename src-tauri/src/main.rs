@@ -33,6 +33,8 @@ pub struct Core {
     presence: Mutex<Presence>,
     game_detect: AtomicBool,
     export_cancel: AtomicBool,
+    sys_audio: Mutex<Option<audio::AudioHandle>>,
+    mic_test: Mutex<Option<audio::AudioHandle>>,
 }
 
 #[derive(Default)]
@@ -784,6 +786,9 @@ fn watch_stream(core: State<'_, CoreRef>, key: String) -> Result<(), String> {
 /// Kendi yayinini bitir ya da izlemeyi birak.
 #[tauri::command]
 fn stop_stream(core: State<'_, CoreRef>, key: String) -> Result<(), String> {
+    if core.store.lock().unwrap().me_id.as_str() == video::stream_owner(&key).to_string() {
+        *core.sys_audio.lock().unwrap() = None;
+    }
     core.voice.lock().unwrap().stop_stream(&key);
     gw_send(&core, json!({"op": 19, "d": {"stream_key": key}}))
 }
@@ -933,6 +938,83 @@ async fn mod_action(
         _ => return Err("bilinmeyen islem".into()),
     };
     core.api.req_h(&t, m, &path, body, &h).await
+}
+
+/// Yayin sesi: sistem sesini (Shion haric) yakalayip yayin baglantisina gonder.
+#[tauri::command]
+fn system_audio(core: State<'_, CoreRef>, key: String, on: bool) -> Result<(), String> {
+    *core.sys_audio.lock().unwrap() = None;
+    if !on {
+        return Ok(());
+    }
+    let tx = core.video.senders.lock().unwrap().get(&key).cloned().ok_or("Yayin bagli degil")?;
+    let h = audio::start_system_capture(move |pcm| {
+        let _ = tx.send(video::VOut::Pcm(pcm));
+    })?;
+    *core.sys_audio.lock().unwrap() = Some(h);
+    Ok(())
+}
+
+/// Mikrofon testi: secili mikrofonu (gurultu engelleme dahil) ac, seviyeyi bildir,
+/// istenirse kendi sesini hoparlorden geri cal.
+#[tauri::command]
+async fn mic_test(app: AppHandle, core: State<'_, CoreRef>, on: bool, playback: bool) -> Result<(), String> {
+    *core.mic_test.lock().unwrap() = None;
+    if !on {
+        return Ok(());
+    }
+    let mixer: audio::Mixer = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
+    let ctl = core.voice_ctl.clone();
+    let mix2 = mixer.clone();
+    let (h, info, has_mic) = tauri::async_runtime::spawn_blocking(move || audio::start(ctl, mix2, Some(tx))).await.map_err(|e| e.to_string())??;
+    if !has_mic {
+        return Err("Mikrofon acilamadi".into());
+    }
+    let ctl = core.voice_ctl.clone();
+    std::thread::Builder::new()
+        .name("shion-mictest".into())
+        .spawn(move || {
+            let mut rs = audio::Resampler::new(audio::RATE, info.rate);
+            let ch = info.channels.max(1) as usize;
+            let mut acc: Vec<f32> = Vec::new();
+            let mut peak = 0f32;
+            let mut n = 0;
+            // tx dusurulunce (test kapaninca) rx biter
+            while let Ok(chunk) = rx.recv() {
+                acc.extend_from_slice(&chunk);
+                while acc.len() >= 960 {
+                    let fr: Vec<f32> = acc.drain(..960).collect();
+                    let rms = (fr.iter().map(|s| s * s).sum::<f32>() / 960.0).sqrt();
+                    peak = peak.max(rms);
+                    n += 1;
+                    if n % 3 == 0 {
+                        let _ = tauri::Emitter::emit(&app, "mic-level", json!({"rms": peak, "speaking": peak > ctl.threshold()}));
+                        peak = 0.0;
+                    }
+                    if playback {
+                        let mut out = Vec::new();
+                        rs.process(&fr, &mut out);
+                        let mut m = mixer.lock().unwrap();
+                        let tr = m.entry(0).or_insert_with(|| audio::Track { buf: Default::default(), primed: false });
+                        for v in out { for _ in 0..ch { tr.buf.push_back(v); } }
+                        let per_ms = info.rate as usize * ch / 1000;
+                        if tr.buf.len() > per_ms * 300 { let extra = tr.buf.len() - per_ms * 80; tr.buf.drain(..extra); }
+                        if tr.buf.len() >= per_ms * 40 { tr.primed = true; }
+                    }
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    *core.mic_test.lock().unwrap() = Some(h);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_user_volume(core: State<'_, CoreRef>, user_id: String, volume: f32) {
+    let Ok(id) = user_id.parse::<u64>() else { return };
+    let mut m = core.voice_ctl.user_volume.lock().unwrap();
+    if (volume - 1.0).abs() < 0.01 { m.remove(&id); } else { m.insert(id, volume.clamp(0.0, 3.0)); }
 }
 
 #[tauri::command]
@@ -1097,6 +1179,40 @@ async fn save_media(app: AppHandle, core: State<'_, CoreRef>, url: String, name:
     Ok(file.to_string_lossy().into_owned())
 }
 
+/* ------------------------------------------------------------------ */
+/* Otomatik guncelleme (GitHub Releases, imzali)                        */
+/* ------------------------------------------------------------------ */
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let up = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    Ok(up.map(|u| json!({"version": u.version, "current": u.current_version, "notes": u.body, "date": u.date.map(|d| d.to_string())})))
+}
+
+/// Indir, dogrula, kur ve yeniden baslat. Ilerleme: "update-progress" {got, total}
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let up = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?.ok_or("Guncelleme yok")?;
+    let a2 = app.clone();
+    let mut got: usize = 0;
+    up.download_and_install(
+        move |chunk, total| {
+            got += chunk;
+            let _ = tauri::Emitter::emit(&a2, "update-progress", json!({"got": got, "total": total}));
+        },
+        || {},
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -1120,6 +1236,8 @@ fn main() {
         presence: Mutex::new(Presence::default()),
         game_detect: AtomicBool::new(false),
         export_cancel: AtomicBool::new(false),
+        sys_audio: Mutex::new(None),
+        mic_test: Mutex::new(None),
     });
     let ptt_ctl = core.voice_ctl.clone();
     let close_core = core.clone();
@@ -1127,6 +1245,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -1258,7 +1377,13 @@ fn main() {
             set_game_detect,
             export_channel,
             cancel_export,
-            save_media
+            save_media,
+            system_audio,
+            set_user_volume,
+            mic_test,
+            app_version,
+            check_update,
+            install_update
         ])
         .run(tauri::generate_context!())
         .expect("Shion baslatilamadi");
