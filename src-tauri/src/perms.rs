@@ -3,7 +3,9 @@
 use crate::store::Guild;
 use serde_json::Value;
 
+pub const CREATE_INVITE: u64 = 1 << 0;
 pub const ADMIN: u64 = 1 << 3;
+pub const MANAGE_MESSAGES: u64 = 1 << 13;
 pub const VIEW: u64 = 1 << 10;
 pub const SEND: u64 = 1 << 11;
 

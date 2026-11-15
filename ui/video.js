@@ -237,7 +237,7 @@ async function toggleScreen() {
   if (!inVoice()) return toast("Önce bir ses kanalına bağlan");
   let stream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: SCR.w }, height: { max: SCR.h }, frameRate: { ideal: SCR.fps, max: SCR.fps } }, audio: false });
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: SCR.w }, height: { max: SCR.h }, frameRate: { ideal: SCR.fps, max: SCR.fps } }, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: "include" });
   } catch (e) { if (e?.name !== "NotAllowedError") toast("Ekran yakalanamadı: " + (e.message || e)); return; }
   const track = stream.getVideoTracks()[0];
   try { track.contentHint = "detail"; } catch {}
@@ -251,15 +251,34 @@ async function toggleScreen() {
   renderVoicePanel();
   toast("📡 Yayın sunucusuna bağlanılıyor…");
 }
+/* Yayın sesi: 48 kHz stereo PCM -> Rust (Opus) */
+function startStreamAudio(sc) {
+  const at = sc.stream.getAudioTracks()[0];
+  if (!at) return false;
+  const ctx = new AudioContext({ sampleRate: 48000 });
+  const src = ctx.createMediaStreamSource(new MediaStream([at]));
+  const proc = ctx.createScriptProcessor(2048, 2, 2);
+  const mute = ctx.createGain(); mute.gain.value = 0; // kendi hoparlörüne geri çalma
+  proc.onaudioprocess = (e) => {
+    const L = e.inputBuffer.getChannelData(0), R = e.inputBuffer.numberOfChannels > 1 ? e.inputBuffer.getChannelData(1) : L;
+    const out = new Float32Array(L.length * 2);
+    for (let i = 0; i < L.length; i++) { out[i * 2] = L[i]; out[i * 2 + 1] = R[i]; }
+    invoke("stream_audio", new Uint8Array(out.buffer), { headers: { "x-target": sc.key } }).catch(() => {});
+  };
+  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  sc.audio = { ctx, proc };
+  return true;
+}
 async function startScreenSender() {
   const sc = V.screen; if (!sc || sc.started) return;
   sc.started = true;
-  try { await sc.sender.start(); toast("🔴 Yayındasın"); }
+  try { await sc.sender.start(); toast(startStreamAudio(sc) ? "🔴 Yayındasın (sesli)" : "🔴 Yayındasın (ses paylaşılmıyor)"); }
   catch (e) { toast("Yayın: " + e.message); stopScreen(); }
 }
 function stopScreen(silent) {
   const sc = V.screen; if (!sc) return;
   sc.sender.stop(); sc.stream.getTracks().forEach((t) => t.stop());
+  if (sc.audio) { try { sc.audio.proc.disconnect(); sc.audio.ctx.close(); } catch {} }
   V.screen = null; removeTile("self-live");
   if (silent !== true) invoke("stop_stream", { key: sc.key }).catch(() => {});
   renderVoicePanel();

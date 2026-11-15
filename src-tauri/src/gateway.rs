@@ -169,6 +169,7 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             let old_log = std::mem::take(&mut s.deleted);
             *s = Store { token, active_channel: active, messages: old_msgs, deleted: old_log, ..Default::default() };
             s.set_me(d["user"].clone());
+            s.gw_session = d["session_id"].as_str().unwrap_or("").to_string();
             for u in arr(&d["users"]) {
                 s.cache_user(u);
             }
@@ -296,6 +297,16 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
                 }
                 let _ = app.emit("unread", ev);
             }
+        }
+        "MESSAGE_POLL_VOTE_ADD" | "MESSAGE_POLL_VOTE_REMOVE" => {
+            if let Some(m) = s.on_poll_vote(d, t == "MESSAGE_POLL_VOTE_ADD") {
+                if s.active_channel == d["channel_id"].as_str().unwrap_or("") {
+                    let _ = app.emit("msg-update", m);
+                }
+            }
+        }
+        "INTERACTION_SUCCESS" | "INTERACTION_FAILURE" | "INTERACTION_CREATE" => {
+            let _ = app.emit("interaction", json!({"nonce": d["nonce"], "ok": t != "INTERACTION_FAILURE"}));
         }
         "MESSAGE_ACK" => {
             let ch = d["channel_id"].as_str().unwrap_or("").to_string();

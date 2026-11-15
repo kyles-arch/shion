@@ -35,14 +35,21 @@ Electron yerine **Tauri 2** (sistemdeki WebView2) + **Rust** arka uç. Gateway (
 - **Kamera ve ekran paylaşımı (Go Live)** — ses panelindeki Kamera / Ekran düğmeleri; başkasının yayınını izlemek için ses listesindeki **CANLI** rozetine tıkla. Görüntüler sohbetin üstünde ızgarada (⛶ odakla, çift tık tam ekran).
   Görüntü WebView2'nin **WebCodecs**'i ile donanım hızlandırmalı H264 olarak kodlanır/çözülür; Rust tarafı RTP paketleme (FU-A/STAP-A), DAVE uçtan uca şifreleme, PLI anahtar kare istekleri ve Discord'un yayın sinyalleşmesini (op 12/15/18-22) yapar. Ek yerel kütüphane yok.
 
-**Bilinen sınırlar:** yayın sesi (ekran sesi) henüz yok — sadece görüntü gönderilir/alınır. Kamera/yayın Discord protokolüne göre yazıldı ama gerçek hesapla henüz denenmedi.
+- **Yayın sesi** — ekran paylaşırken sistem sesi de gönderilir (Opus stereo 128 kbps); izlerken yayıncının sesi çalınır.
+- **Davetler** — mesajlardaki discord.gg linkleri kart olarak gösterilir (sunucu adı, üye/çevrimiçi sayısı, **Katıl**); sol çubuktaki **＋** ile kodla katılma; sunucu menüsünden **davet oluştur** ve **sunucudan ayrıl**.
+- **Slash komutları** — kutuya `/` yaz: sunucudaki botların komutları listelenir (Tab/↑↓ ile seç), seçenekler `ad:değer` biçiminde, alt komutlar dahil.
+- **Anketler** — mesajdaki anketler oy oranlarıyla gösterilir, tıklayarak oy ver/geri al, kendi anketini bitir; 📊 ile anket oluştur (süre, çoklu seçim).
+- **Sesli mesajlar** — 🎤 ile kaydet, Rust tarafında Ogg/Opus'a çevrilip dalga formuyla gönderilir; gelenler dalga formlu oynatıcıda çalınır.
+- **Moderasyon** — yetkin varsa üyeye sağ tık: zaman aşımı, at, yasakla (sebep ile denetim kaydına), takma ad, rol düzenle (senden üstteki roller kilitli); mesajlarda sabitle/kaldır ve başkasının mesajını silme.
+
+**Bilinen sınırlar:** ses/kamera/yayın Discord protokolüne göre yazıldı ama gerçek hesapla henüz denenmedi. Davetle katılırken Discord captcha isterse Shion bunu çözemez; daveti tarayıcıda açmayı önerir. Otomatik güncelleme yok (bir güncelleme sunucusu/GitHub deposu gerekir) ve exe imzasız olduğu için Windows SmartScreen uyarısı çıkar.
 
 ## Testler
 ```bash
-cd src-tauri && cargo test          # 28 Rust birim testi (izinler, mesaj kaydı, okuma durumu, DPAPI, RTP şifreleme, H264 paketleme, RTCP, DAVE, Opus, yeniden örnekleme)
+cd src-tauri && cargo test          # 31 Rust birim testi (izinler, mesaj kaydı, okuma durumu, anket oyları, DPAPI, RTP şifreleme, H264 paketleme, RTCP, DAVE, Opus, Ogg/sesli mesaj, yeniden örnekleme)
 node tests/serve.mjs                # arayüzü sahte Discord verisiyle http://localhost:5174 adresinde açar
 ```
-Tarayıcı konsolunda arayüz testleri (42 senaryo; WebCodecs ile gerçek H264 kodlama→çözme dahil): `await (await import('/__test/ui-tests.js')).run()`
+Tarayıcı konsolunda arayüz testleri (51 senaryo; davet, slash, anket, sesli mesaj kaydı, moderasyon ve WebCodecs ile gerçek H264 kodlama→çözme dahil): `await (await import('/__test/ui-tests.js')).run()`
 
 ## Derleme
 Gerekenler: Node.js, [Rust](https://rustup.rs) (MSVC toolchain), Visual Studio C++ Build Tools, WebView2 (Windows 11'de hazır).

@@ -450,6 +450,148 @@ export async function run() {
     assert(!V.tiles.size && q("#video-grid").classList.contains("hidden"), "temizlenmedi");
   });
 
+  // ---------- Davet / slash / anket / sesli mesaj / moderasyon ----------
+  const openValo = async () => {
+    const g = window.__mock.guilds[0];
+    closeModal(); openGuild(g.id); await openChannel({ ...g.channels[1], guild_id: g.id }); await sleep(80);
+    return g;
+  };
+  const lastMenuClick = async (label) => {
+    const b = [...document.querySelectorAll(".menu button")].find((x) => x.textContent.includes(label));
+    if (!b) throw new Error("menude yok: " + label + " | " + [...document.querySelectorAll(".menu button")].map((x) => x.textContent).join(","));
+    b.click(); await sleep(80);
+  };
+  const fakeMsg = (extra) => ({ id: String(1390000000000000000n + BigInt(Math.floor(Math.random() * 1e9))), channel_id: S.channel.id, author: window.__mock.users[0], content: "", timestamp: new Date().toISOString(), attachments: [], embeds: [], mentions: [], type: 0, ...extra });
+
+  await test("davet karti: bilgi + katil + captcha", async () => {
+    await openValo();
+    window.__mock.emit("msg-create", fakeMsg({ content: "gelin https://discord.gg/test123 ve discord.gg/captcha" })); await sleep(150);
+    const cards = document.querySelectorAll("#messages .msg:last-child .inv-card");
+    assert(cards.length === 2, "kart sayisi " + cards.length);
+    assert(cards[0].textContent.includes("Test Sunucusu") && cards[0].textContent.includes("1.234"), "bilgi: " + cards[0].textContent);
+    cards[0].querySelector(".btn").click(); await sleep(60);
+    assert(called("join_invite").pop()[1].code === "test123", "katilma cagrilmadi");
+    assert(cards[0].querySelector(".btn").textContent.includes("Katıldın"), "buton guncellenmedi");
+    cards[1].querySelector(".btn").click(); await sleep(60);
+    assert(q("#modal-title").textContent.includes("Doğrulama"), "captcha uyarisi yok");
+    closeModal();
+  });
+
+  await test("sunucuya katil (+ dugmesi)", async () => {
+    q(".rail-btn.add-guild").click(); await sleep(30);
+    const inp = q("#modal .inp"); inp.value = "https://discord.gg/xyz99"; q("#modal .btn.primary").click(); await sleep(80);
+    assert(q("#modal .inv-card")?.textContent.includes("Test Sunucusu"), "onizleme yok");
+    closeModal();
+  });
+
+  await test("davet olustur (sunucu menusu)", async () => {
+    const g = window.__mock.guilds[0];
+    guildMenu({ clientX: 100, clientY: 100 }, S.guilds.find((x) => x.id === g.id));
+    await lastMenuClick("Davet oluştur");
+    assert(q("#modal .inp")?.value === "https://discord.gg/abc123", "link yok");
+    closeModal();
+  });
+
+  await test("slash komutlari: liste, secim, calistirma", async () => {
+    const inp = q("#input");
+    inp.value = "/pl"; inp.dispatchEvent(new Event("input")); await sleep(200);
+    assert(q(".slash-pop .sl-item b")?.textContent === "/play", "liste: " + q(".slash-pop")?.textContent);
+    inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); await sleep(120);
+    assert(inp.value.startsWith("/play sarki:"), "secim: " + inp.value);
+    inp.value = "/play sarki:Tarkan Şımarık ses:50";
+    await send(); await sleep(50);
+    const d = called("run_command").pop()[1];
+    assert(d.applicationId === "a1" && d.data.name === "play" && d.data.version === "7", "veri: " + JSON.stringify(d));
+    assert(JSON.stringify(d.data.options) === JSON.stringify([{ type: 3, name: "sarki", value: "Tarkan Şımarık" }, { type: 4, name: "ses", value: 50 }]), "secenekler: " + JSON.stringify(d.data.options));
+    assert(inp.value === "", "kutu temizlenmedi");
+    inp.value = "/queue clear"; await send(); await sleep(50);
+    const d2 = called("run_command").pop()[1].data;
+    assert(d2.options[0].type === 1 && d2.options[0].name === "clear", "alt komut: " + JSON.stringify(d2.options));
+    const n = called("run_command").length;
+    inp.value = "/play"; await send(); await sleep(30);
+    assert(called("run_command").length === n && q("#toast").textContent.includes("Zorunlu"), "zorunlu kontrolu yok");
+    inp.value = "/bilinmeyen merhaba"; const sm = called("send_message").length; await send(); await sleep(50);
+    assert(called("send_message").length === sm + 1, "bilinmeyen / normal mesaj olarak gitmeli");
+    closeSlash();
+  });
+
+  await test("anket: goster, oy ver, olustur", async () => {
+    window.__mock.emit("msg-create", fakeMsg({ poll: { question: { text: "En iyi harita?" }, answers: [{ answer_id: 1, poll_media: { text: "Ascent" } }, { answer_id: 2, poll_media: { text: "Bind" } }], expiry: new Date(Date.now() + 7200000).toISOString(), allow_multiselect: false, results: { is_finalized: false, answer_counts: [{ id: 2, count: 3, me_voted: false }] } } }));
+    await sleep(60);
+    const p = q("#messages .msg:last-child .poll");
+    assert(p && p.querySelectorAll(".poll-a").length === 2, "anket yok");
+    assert(p.textContent.includes("3 oy") && p.textContent.includes("saat kaldı"), "alt bilgi: " + p.textContent);
+    p.querySelector(".poll-a").click(); await sleep(30);
+    const v = called("poll_vote").pop()[1];
+    assert(v.answerIds[0] === 1, "oy: " + JSON.stringify(v));
+    openPollCreator(); await sleep(20);
+    const ins = document.querySelectorAll("#modal .inp");
+    ins[0].value = "Pizza mı döner mi?"; ins[1].value = "Pizza"; ins[2].value = "Döner";
+    [...document.querySelectorAll("#modal .btn")].find((b) => b.textContent.includes("gönder")).click(); await sleep(60);
+    const sm = called("send_message").pop()[1];
+    assert(sm.poll?.answers.length === 2 && sm.poll.question.text === "Pizza mı döner mi?" && sm.poll.duration === 24, "anket: " + JSON.stringify(sm.poll));
+    assert(q("#messages .msg:last-child .poll"), "gonderilen anket gorunmuyor");
+  });
+
+  await test("sesli mesaj: oynatici", async () => {
+    const wf = btoa(String.fromCharCode(...Array.from({ length: 60 }, (_, i) => Math.round(127 + 120 * Math.sin(i / 4)))));
+    window.__mock.emit("msg-create", fakeMsg({ flags: 8192, attachments: [{ id: "1", filename: "voice-message.ogg", content_type: "audio/ogg", url: "data:audio/ogg;base64,", proxy_url: "", size: 9000, duration_secs: 3.4, waveform: wf }] }));
+    await sleep(60);
+    const v = q("#messages .msg:last-child .vmsg");
+    assert(v, "oynatici yok");
+    assert(v.querySelectorAll(".vm-wave i").length >= 30, "dalga formu yok");
+    assert(v.querySelector(".vm-time").textContent === "0:03", "sure: " + v.querySelector(".vm-time").textContent);
+  });
+
+  await test("sesli mesaj: kaydet ve gonder", async () => {
+    const orig = navigator.mediaDevices.getUserMedia;
+    navigator.mediaDevices.getUserMedia = async () => { const c = new AudioContext(); const o = c.createOscillator(); const d = c.createMediaStreamDestination(); o.connect(d); o.start(); return d.stream; };
+    await toggleRecord(); await sleep(1200);
+    assert(q(".rec-bar"), "kayit cubugu yok");
+    await toggleRecord(); await sleep(80);
+    navigator.mediaDevices.getUserMedia = orig;
+    const c = called("voice_message").pop();
+    assert(c, "gonderilmedi");
+    assert(c[1] instanceof Uint8Array && c[1].length > 48000 * 4 * 0.5, "PCM boyutu " + c[1]?.length);
+    assert(c[2].headers["x-channel"] === S.channel.id, "kanal basligi");
+    assert(!q(".rec-bar"), "cubuk kapanmadi");
+    return (c[1].length / 4 / 48000).toFixed(2) + " sn";
+  });
+
+  await test("moderasyon: sag tik menusu, yasakla, roller", async () => {
+    const g = await openValo();
+    const author = [...document.querySelectorAll("#messages .author[data-pop]")].find((a) => a.dataset.pop !== S.me.id);
+    author.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 200, clientY: 200 })); await sleep(30);
+    const labels = [...document.querySelectorAll(".menu button")].map((x) => x.textContent).join("|");
+    for (const l of ["Yasakla", "Sunucudan at", "Zaman aşımı", "Rolleri düzenle"]) assert(labels.includes(l), l + " yok: " + labels);
+    await lastMenuClick("Yasakla");
+    [...document.querySelectorAll("#modal .btn")].find((b) => b.textContent === "Yasakla").click(); await sleep(40);
+    const b = called("mod_action").pop()[1];
+    assert(b.action === "ban" && b.target === author.dataset.pop && b.guildId === g.id, "ban: " + JSON.stringify(b));
+    author.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 200, clientY: 200 })); await sleep(30);
+    await lastMenuClick("Rolleri düzenle"); await sleep(50);
+    const items = document.querySelectorAll("#modal .role-item");
+    assert(items.length === 3, "rol sayisi " + items.length);
+    assert(items[0].classList.contains("off"), "ustteki rol (Kurucu) kilitli olmali");
+    assert(items[2].querySelector("input").checked, "mevcut rol isaretli degil");
+    items[1].querySelector("input").click();
+    [...document.querySelectorAll("#modal .btn")].find((x) => x.textContent === "Kaydet").click(); await sleep(40);
+    const r = called("mod_action").pop()[1];
+    assert(r.action === "roles" && JSON.stringify(r.value.sort()) === JSON.stringify(["r2", "r3"]), "roller: " + JSON.stringify(r));
+  });
+
+  await test("moderator: sabitle + baskasinin mesajini sil", async () => {
+    const el = [...document.querySelectorAll("#messages .msg")].find((m) => { const x = S.msgs.find((y) => y.id === m.dataset.id); return x && x.author.id !== S.me.id && !x._deleted && !x.poll; });
+    const pin = [...el.querySelectorAll(".actions button")].find((b) => b.title === "Sabitle");
+    assert(pin, "sabitle yok");
+    pin.click(); await sleep(30);
+    assert(called("mod_action").pop()[1].action === "pin", "pin cagrilmadi");
+    assert([...el.querySelectorAll(".actions button")].some((b) => b.title === "Sil (moderatör)"), "moderator sil yok");
+    // Yetkisiz sunucuda yok
+    const g2 = window.__mock.guilds[3]; openGuild(g2.id); await openChannel({ ...g2.channels[1], guild_id: g2.id }); await sleep(60);
+    assert(!q('#messages .actions button[title="Sabitle"]'), "yetkisiz sunucuda sabitle cikmamali");
+  });
+
   await test("yatay tasma yok", async () => {
     assert(document.documentElement.scrollWidth <= innerWidth + 1, "scrollWidth " + document.documentElement.scrollWidth);
   });

@@ -65,6 +65,8 @@ pub struct Store {
     pub muted_channels: HashSet<String>,
     /// silinen mesaj kaydi diske yazilmayi bekliyor
     pub deleted_dirty: bool,
+    /// gateway oturum kimligi (slash komutlari icin)
+    pub gw_session: String,
 }
 
 impl Store {
@@ -270,7 +272,9 @@ impl Store {
                             "topic": c["topic"], "nsfw": c["nsfw"],
                             "last_message_id": c["last_message_id"],
                             "hidden": g.members_known && p & perms::VIEW == 0,
-                            "can_send": p & perms::SEND != 0
+                            "can_send": p & perms::SEND != 0,
+                            "manage": p & perms::MANAGE_MESSAGES != 0,
+                            "invite": p & perms::CREATE_INVITE != 0
                         })
                     })
                     .collect();
@@ -293,7 +297,8 @@ impl Store {
                     .map(|e| json!({"id": e["id"], "name": e["name"], "animated": e["animated"]}))
                     .collect();
                 let voice: Vec<Value> = g.voice_states.values().map(|v| self.voice_summary(v)).collect();
-                json!({"id": g.id, "name": g.name, "icon": g.icon, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "voice_states": voice})
+                let my_top = g.my_roles.iter().filter_map(|r| g.roles.get(r)).map(|r| r["position"].as_i64().unwrap_or(0)).max().unwrap_or(0);
+                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "voice_states": voice})
             })
             .collect()
     }
@@ -523,6 +528,35 @@ impl Store {
         Some(m.clone())
     }
 
+    /// Anket oyu ekle/kaldir; guncel mesaji dondurur.
+    pub fn on_poll_vote(&mut self, d: &Value, add: bool) -> Option<Value> {
+        let me = self.me_id.clone();
+        let v = self.messages.get_mut(d["channel_id"].as_str()?)?;
+        let i = v.binary_search_by_key(&sfv(&d["message_id"]), |x| sfv(&x["id"])).ok()?;
+        let m = &mut v[i];
+        if !m["poll"].is_object() {
+            return None;
+        }
+        if !m["poll"]["results"]["answer_counts"].is_array() {
+            m["poll"]["results"] = json!({"is_finalized": false, "answer_counts": []});
+        }
+        let aid = d["answer_id"].as_u64()?;
+        let mine = d["user_id"].as_str() == Some(me.as_str());
+        let list = m["poll"]["results"]["answer_counts"].as_array_mut()?;
+        match list.iter().position(|c| c["id"].as_u64() == Some(aid)) {
+            Some(j) => {
+                let c = list[j]["count"].as_i64().unwrap_or(0) + if add { 1 } else { -1 };
+                list[j]["count"] = json!(c.max(0));
+                if mine {
+                    list[j]["me_voted"] = json!(add);
+                }
+            }
+            None if add => list.push(json!({"id": aid, "count": 1, "me_voted": mine})),
+            None => {}
+        }
+        Some(m.clone())
+    }
+
     pub fn clear_reactions(&mut self, ch: &str, id: &str) -> Option<Value> {
         let v = self.messages.get_mut(ch)?;
         let i = v.binary_search_by_key(&sf(id), |x| sfv(&x["id"])).ok()?;
@@ -637,6 +671,23 @@ mod tests {
         assert_eq!(s.guild("g").unwrap().voice_states.len(), 1);
         s.on_voice_state(&json!({"guild_id": "g", "user_id": "u", "channel_id": null}));
         assert!(s.guild("g").unwrap().voice_states.is_empty());
+    }
+
+    #[test]
+    fn poll_votes_update_counts() {
+        let mut s = Store::default();
+        s.me_id = "me".into();
+        let mut m = msg("10", "");
+        m["poll"] = json!({"question": {"text": "?"}, "answers": [{"answer_id": 1}, {"answer_id": 2}]});
+        s.put_messages("c1", vec![m]);
+        let ev = |u: &str, a: u64| json!({"channel_id": "c1", "message_id": "10", "user_id": u, "answer_id": a});
+        s.on_poll_vote(&ev("me", 1), true);
+        let m = s.on_poll_vote(&ev("x", 1), true).unwrap();
+        assert_eq!(m["poll"]["results"]["answer_counts"][0]["count"], 2);
+        assert_eq!(m["poll"]["results"]["answer_counts"][0]["me_voted"], true);
+        let m = s.on_poll_vote(&ev("me", 1), false).unwrap();
+        assert_eq!(m["poll"]["results"]["answer_counts"][0]["count"], 1);
+        assert_eq!(m["poll"]["results"]["answer_counts"][0]["me_voted"], false);
     }
 
     #[test]

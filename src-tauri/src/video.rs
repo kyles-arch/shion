@@ -21,6 +21,8 @@ pub enum VOut {
     Frame { data: Vec<u8>, key: bool },
     /// Goruntuyu ac/kapat (op 12) — genislik, yukseklik, fps
     Active(bool, u32, u32, u32),
+    /// Yayin sesi: 48 kHz stereo, aralikli f32
+    Pcm(Vec<f32>),
 }
 
 /// Rust -> arayuz kare kanali ve baglantilara giden gondericiler.

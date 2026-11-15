@@ -140,7 +140,7 @@ fn find_device(input: bool, name: &Option<String>) -> Option<cpal::Device> {
 
 /// Mikrofon + hoparloru baslatir. Mikrofon ornekleri 48 kHz mono olarak `mic_tx`'e gider.
 /// Donus: (handle, cikis bilgisi, mikrofon var mi)
-pub fn start(ctl: Arc<VoiceCtl>, mixer: Mixer, mic_tx: SyncSender<Vec<f32>>) -> Result<(AudioHandle, OutInfo, bool), String> {
+pub fn start(ctl: Arc<VoiceCtl>, mixer: Mixer, mic_tx: Option<SyncSender<Vec<f32>>>) -> Result<(AudioHandle, OutInfo, bool), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(OutInfo, bool), String>>();
     let stop2 = stop.clone();
@@ -149,12 +149,13 @@ pub fn start(ctl: Arc<VoiceCtl>, mixer: Mixer, mic_tx: SyncSender<Vec<f32>>) -> 
         .spawn(move || {
             let built = (|| -> Result<(Stream, Option<Stream>, OutInfo), String> {
                 let out = build_output(&ctl, mixer)?;
-                let inp = match build_input(&ctl, mic_tx) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
+                let inp = match mic_tx.map(|tx| build_input(&ctl, tx)) {
+                    Some(Ok(s)) => Some(s),
+                    Some(Err(e)) => {
                         eprintln!("mikrofon acilamadi: {e}");
                         None
                     }
+                    None => None,
                 };
                 Ok((out.0, inp, out.1))
             })();

@@ -3,6 +3,7 @@
 mod api;
 mod audio;
 mod gateway;
+mod media;
 mod perms;
 mod secure;
 mod store;
@@ -199,10 +200,14 @@ async fn send_message(
     content: String,
     reply_to: Option<String>,
     files: Option<Vec<FileIn>>,
+    poll: Option<Value>,
 ) -> Result<Value, String> {
     use base64::Engine;
     let t = tok(&core)?;
     let mut body = json!({"content": content, "nonce": nonce(), "tts": false, "flags": 0});
+    if let Some(p) = poll {
+        body["poll"] = p;
+    }
     if let Some(r) = reply_to {
         body["message_reference"] = json!({"message_id": r, "channel_id": channel_id});
     }
@@ -679,6 +684,153 @@ fn stop_stream(core: State<'_, CoreRef>, key: String) -> Result<(), String> {
     gw_send(&core, json!({"op": 19, "d": {"stream_key": key}}))
 }
 
+/* ------------------------------------------------------------------ */
+/* Davetler, slash komutlari, anketler, sesli mesaj, moderasyon        */
+/* ------------------------------------------------------------------ */
+
+fn invite_code(s: &str) -> String {
+    s.trim().trim_end_matches('/').rsplit('/').next().unwrap_or("").split('?').next().unwrap_or("").to_string()
+}
+
+#[tauri::command]
+async fn invite_info(core: State<'_, CoreRef>, code: String) -> Result<Value, String> {
+    let t = tok(&core)?;
+    core.api.get(&t, &format!("/invites/{}?with_counts=true&with_expiration=true", api::enc(&invite_code(&code)))).await
+}
+
+/// Davetle sunucuya katil. Discord dogrulama (captcha) isterse hata metni "captcha" icerir.
+#[tauri::command]
+async fn join_invite(core: State<'_, CoreRef>, code: String) -> Result<Value, String> {
+    use base64::Engine;
+    let t = tok(&core)?;
+    let sid = core.store.lock().unwrap().gw_session.clone();
+    let ctx = base64::engine::general_purpose::STANDARD.encode(r#"{"location":"Markdown Link"}"#);
+    core.api
+        .req_h(&t, Method::POST, &format!("/invites/{}", api::enc(&invite_code(&code))), Some(json!({"session_id": sid})), &[("X-Context-Properties", ctx)])
+        .await
+        .map_err(|e| if e.contains("captcha") { "captcha".to_string() } else { e })
+}
+
+#[tauri::command]
+async fn create_invite(core: State<'_, CoreRef>, channel_id: String, max_age: u32, max_uses: u32) -> Result<Value, String> {
+    let t = tok(&core)?;
+    core.api
+        .req(&t, Method::POST, &format!("/channels/{channel_id}/invites"), Some(json!({"max_age": max_age, "max_uses": max_uses, "temporary": false})))
+        .await
+}
+
+#[tauri::command]
+async fn leave_guild(core: State<'_, CoreRef>, guild_id: String) -> Result<(), String> {
+    let t = tok(&core)?;
+    core.api.req(&t, Method::DELETE, &format!("/users/@me/guilds/{guild_id}"), Some(json!({"lurking": false}))).await.map(|_| ())
+}
+
+/// Kanalda kullanilabilir slash komutlari ({applications, application_commands}).
+#[tauri::command]
+async fn app_commands(core: State<'_, CoreRef>, guild_id: Option<String>, channel_id: String) -> Result<Value, String> {
+    let t = tok(&core)?;
+    let path = match &guild_id {
+        Some(g) => format!("/guilds/{g}/application-command-index"),
+        None => format!("/channels/{channel_id}/application-command-index"),
+    };
+    core.api.get(&t, &path).await
+}
+
+/// Slash komutu calistir. data: {version, id, name, type, options, application_command}
+#[tauri::command]
+async fn run_command(core: State<'_, CoreRef>, guild_id: Option<String>, channel_id: String, application_id: String, data: Value) -> Result<String, String> {
+    let t = tok(&core)?;
+    let sid = core.store.lock().unwrap().gw_session.clone();
+    let n = nonce();
+    let body = json!({"type": 2, "application_id": application_id, "guild_id": guild_id, "channel_id": channel_id, "session_id": sid, "data": data, "nonce": n});
+    core.api.req(&t, Method::POST, "/interactions", Some(body)).await?;
+    Ok(n)
+}
+
+#[tauri::command]
+async fn poll_vote(core: State<'_, CoreRef>, channel_id: String, message_id: String, answer_ids: Vec<u32>) -> Result<(), String> {
+    let t = tok(&core)?;
+    let ids: Vec<String> = answer_ids.iter().map(|a| a.to_string()).collect();
+    core.api
+        .req(&t, Method::PUT, &format!("/channels/{channel_id}/polls/{message_id}/answers/@me"), Some(json!({"answer_ids": ids})))
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
+async fn end_poll(core: State<'_, CoreRef>, channel_id: String, message_id: String) -> Result<(), String> {
+    let t = tok(&core)?;
+    core.api.req(&t, Method::POST, &format!("/channels/{channel_id}/polls/{message_id}/expire"), None).await.map(|_| ())
+}
+
+/// Sesli mesaj gonder: govde = 48 kHz mono f32 (little endian). Baslik: x-channel
+#[tauri::command]
+async fn voice_message(core: State<'_, CoreRef>, request: tauri::ipc::Request<'_>) -> Result<Value, String> {
+    let t = tok(&core)?;
+    let ch = request.headers().get("x-channel").and_then(|v| v.to_str().ok()).ok_or("kanal yok")?.to_string();
+    let tauri::ipc::InvokeBody::Raw(raw) = request.body() else { return Err("ham veri bekleniyor".into()) };
+    let pcm: Vec<f32> = raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let vm = tauri::async_runtime::spawn_blocking(move || media::encode_voice_message(&pcm)).await.map_err(|e| e.to_string())??;
+    let payload = json!({
+        "flags": 8192, "nonce": nonce(), "content": "",
+        "attachments": [{"id": "0", "filename": "voice-message.ogg", "duration_secs": vm.duration_secs, "waveform": vm.waveform}]
+    });
+    core.api.upload(&t, &format!("/channels/{ch}/messages"), &payload, &[("voice-message.ogg".into(), vm.ogg)]).await
+}
+
+/// Yayin sesi (Go Live): govde = 48 kHz stereo aralikli f32. Baslik: x-target (yayin anahtari)
+#[tauri::command]
+fn stream_audio(core: State<'_, CoreRef>, request: tauri::ipc::Request<'_>) {
+    let Some(key) = request.headers().get("x-target").and_then(|v| v.to_str().ok()) else { return };
+    let tauri::ipc::InvokeBody::Raw(raw) = request.body() else { return };
+    let pcm: Vec<f32> = raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    if let Some(tx) = core.video.senders.lock().unwrap().get(key) {
+        let _ = tx.send(video::VOut::Pcm(pcm));
+    }
+}
+
+#[tauri::command]
+async fn member_info(core: State<'_, CoreRef>, guild_id: String, user_id: String) -> Result<Value, String> {
+    let t = tok(&core)?;
+    core.api.get(&t, &format!("/guilds/{guild_id}/members/{user_id}")).await
+}
+
+/// Moderasyon: kick | ban | unban | timeout | roles | nick | pin | unpin
+#[tauri::command]
+async fn mod_action(
+    core: State<'_, CoreRef>,
+    action: String,
+    guild_id: Option<String>,
+    channel_id: Option<String>,
+    target: String,
+    value: Option<Value>,
+    reason: Option<String>,
+) -> Result<Value, String> {
+    let t = tok(&core)?;
+    let g = guild_id.unwrap_or_default();
+    let mut h: Vec<(&str, String)> = vec![];
+    if let Some(r) = reason.filter(|r| !r.trim().is_empty()) {
+        h.push(("X-Audit-Log-Reason", api::enc(&r)));
+    }
+    let v = value.unwrap_or(Value::Null);
+    let me = core.store.lock().unwrap().me_id.clone();
+    let member = if target == me { format!("/guilds/{g}/members/@me") } else { format!("/guilds/{g}/members/{target}") };
+    let (m, path, body) = match action.as_str() {
+        "kick" => (Method::DELETE, format!("/guilds/{g}/members/{target}"), None),
+        "ban" => (Method::PUT, format!("/guilds/{g}/bans/{target}"), Some(json!({"delete_message_seconds": v.as_u64().unwrap_or(0)}))),
+        "unban" => (Method::DELETE, format!("/guilds/{g}/bans/{target}"), None),
+        "timeout" => (Method::PATCH, member, Some(json!({"communication_disabled_until": v}))),
+        "roles" => (Method::PATCH, member, Some(json!({"roles": v}))),
+        "nick" => (Method::PATCH, member, Some(json!({"nick": v}))),
+        "pin" | "unpin" => {
+            let c = channel_id.ok_or("kanal yok")?;
+            (if action == "pin" { Method::PUT } else { Method::DELETE }, format!("/channels/{c}/pins/{target}"), None)
+        }
+        _ => return Err("bilinmeyen islem".into()),
+    };
+    core.api.req_h(&t, m, &path, body, &h).await
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -814,7 +966,19 @@ fn main() {
             start_stream,
             stream_active,
             watch_stream,
-            stop_stream
+            stop_stream,
+            invite_info,
+            join_invite,
+            create_invite,
+            leave_guild,
+            app_commands,
+            run_command,
+            poll_vote,
+            end_poll,
+            voice_message,
+            stream_audio,
+            member_info,
+            mod_action
         ])
         .run(tauri::generate_context!())
         .expect("Shion baslatilamadi");

@@ -230,6 +230,8 @@ async fn session(app: &AppHandle, info: &VoiceInfo, ctl: Arc<VoiceCtl>, hub: &Vi
     let mut depack: HashMap<u32, Depacketizer> = HashMap::new();
     let mut last_pli: HashMap<u32, Instant> = HashMap::new();
     let mut rtcp_nonce: u32 = 0x8000_0000;
+    let mut stream_enc: Option<opus::Encoder> = None;
+    let mut stream_acc: Vec<f32> = Vec::new();
 
     macro_rules! send_json {
         ($v:expr) => {
@@ -303,6 +305,31 @@ async fn session(app: &AppHandle, info: &VoiceInfo, ctl: Arc<VoiceCtl>, hub: &Vi
                             send_json!(json!({"op": 5, "d": {"speaking": if video_on {2} else {0}, "delay": 0, "ssrc": ssrc}}));
                         }
                     }
+                    VOut::Pcm(pcm) => {
+                        if !video_on { continue; }
+                        let (Some(u), Some(c)) = (&udp, &cipher) else { continue };
+                        if stream_enc.is_none() {
+                            stream_enc = opus::Encoder::new(RATE, opus::Channels::Stereo, opus::Application::Audio).ok();
+                            if let Some(e) = stream_enc.as_mut() { let _ = e.set_bitrate(opus::Bitrate::Bits(128_000)); }
+                        }
+                        let Some(enc) = stream_enc.as_mut() else { continue };
+                        stream_acc.extend_from_slice(&pcm);
+                        if stream_acc.len() > FRAME * 2 * 50 { let extra = stream_acc.len() - FRAME * 2 * 10; stream_acc.drain(..extra); }
+                        let mut obuf = [0u8; 4000];
+                        while stream_acc.len() >= FRAME * 2 {
+                            let fr: Vec<f32> = stream_acc.drain(..FRAME * 2).collect();
+                            let Ok(n) = enc.encode_float(&fr, &mut obuf) else { continue };
+                            let payload: Vec<u8> = if dave.version > 0 {
+                                let Some(s) = dave.session.as_mut() else { continue };
+                                if !s.can_encrypt() { continue; }
+                                match s.encrypt_opus(&obuf[..n]) { Ok(p) => p.into_owned(), Err(_) => continue }
+                            } else { obuf[..n].to_vec() };
+                            if let Some(p) = seal_rtp(c, rtp_seq, rtp_ts, ssrc, nonce, &payload) { let _ = u.send(&p).await; }
+                            rtp_seq = rtp_seq.wrapping_add(1);
+                            rtp_ts = rtp_ts.wrapping_add(FRAME as u32);
+                            nonce = nonce.wrapping_add(1);
+                        }
+                    }
                     VOut::Frame { data, .. } => {
                         if !video_on { continue; }
                         let (Some(u), Some(c)) = (&udp, &cipher) else { continue };
@@ -358,9 +385,9 @@ async fn session(app: &AppHandle, info: &VoiceInfo, ctl: Arc<VoiceCtl>, hub: &Vi
                     hub.emit(vkind, uid, pssrc, &frame);
                     continue;
                 }
-                if is_stream || ctl.deafened.load(Ordering::Relaxed) { continue; }
+                if (is_stream && sending) || ctl.deafened.load(Ordering::Relaxed) { continue; }
                 let mut opus_pkt = rtp.payload;
-                let Some(&uid) = ssrc_user.get(&pssrc) else { continue };
+                let Some(uid) = ssrc_user.get(&pssrc).copied().or(if is_stream { Some(stream_owner) } else { None }) else { continue };
                 if dave.version > 0 {
                     let Some(s) = dave.session.as_mut() else { continue };
                     match s.decrypt(uid, MediaType::AUDIO, &opus_pkt) { Ok(d) => opus_pkt = d, Err(_) => continue }
@@ -508,6 +535,15 @@ async fn session(app: &AppHandle, info: &VoiceInfo, ctl: Arc<VoiceCtl>, hub: &Vi
                                 // Goruntuleri almak istedigimizi bildir
                                 send_json!(json!({"op": 15, "d": {"any": 100}}));
                                 if is_stream {
+                                    if !sending {
+                                        // Izleyici: yayin sesini cal (mikrofon acilmaz)
+                                        let ctl2 = ctl.clone();
+                                        let mix2 = mixer.clone();
+                                        if let Ok(Ok((h, oi, _))) = tauri::async_runtime::spawn_blocking(move || audio::start(ctl2, mix2, None)).await {
+                                            out_info = oi;
+                                            _audio = Some(h);
+                                        }
+                                    }
                                     status(app, &info.kind, "connected", json!({"e2ee": dave.version > 0}));
                                     continue;
                                 }
@@ -515,7 +551,7 @@ async fn session(app: &AppHandle, info: &VoiceInfo, ctl: Arc<VoiceCtl>, hub: &Vi
                                 let (mic_tx, mic_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
                                 let ctl2 = ctl.clone();
                                 let mix2 = mixer.clone();
-                                let started = tauri::async_runtime::spawn_blocking(move || audio::start(ctl2, mix2, mic_tx)).await.map_err(|e| e.to_string())?;
+                                let started = tauri::async_runtime::spawn_blocking(move || audio::start(ctl2, mix2, Some(mic_tx))).await.map_err(|e| e.to_string())?;
                                 let (h, oi, has_mic) = started?;
                                 out_info = oi;
                                 _audio = Some(h);

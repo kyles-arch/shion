@@ -78,8 +78,16 @@ impl Api {
     }
 
     pub async fn req(&self, token: &str, method: Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+        self.req_h(token, method, path, body, &[]).await
+    }
+
+    /// Ek basliklarla istek (denetim kaydi nedeni, davet baglami vb.)
+    pub async fn req_h(&self, token: &str, method: Method, path: &str, body: Option<Value>, headers: &[(&str, String)]) -> Result<Value, String> {
         for _ in 0..4 {
             let mut rb = self.builder(token, method.clone(), path);
+            for (k, v) in headers {
+                rb = rb.header(*k, v);
+            }
             if let Some(b) = &body {
                 rb = rb.json(b);
             }
@@ -96,7 +104,10 @@ impl Api {
         for _ in 0..3 {
             let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
             for (i, (name, data)) in files.iter().enumerate() {
-                let part = reqwest::multipart::Part::bytes(data.clone()).file_name(name.clone());
+                let mut part = reqwest::multipart::Part::bytes(data.clone()).file_name(name.clone());
+                if name.ends_with(".ogg") {
+                    part = part.mime_str("audio/ogg").map_err(|e| e.to_string())?;
+                }
                 form = form.part(format!("files[{i}]"), part);
             }
             let res = self

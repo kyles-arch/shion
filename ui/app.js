@@ -291,6 +291,7 @@ function guildMenu(e, g) {
   else items.push({ label: "Yeni klasöre koy", fn: () => { cfg.rail[loc.index] = { type: "f", id: "f" + Date.now(), name: "Yeni klasör", color: null, open: true, guilds: [g.id] }; saveCfg(); renderRail(); } });
   const folders = cfg.rail.filter((x) => x.type === "f" && x !== loc.folder);
   if (folders.length) { items.push("-"); for (const f of folders) items.push({ label: "📁 " + f.name + " klasörüne taşı", fn: () => railMove({ type: "g", id: g.id }, { type: "f", id: f.id }, "merge") }); }
+  items.push(...guildExtraItems(g));
   items.push("-", { label: "Sunucu ID'sini kopyala", fn: () => { navigator.clipboard.writeText(g.id); toast("Kopyalandı"); } });
   showMenu(e, items);
 }
@@ -526,6 +527,8 @@ function renderMsg(m, prev) {
         img.src = a.proxy_url + (a.proxy_url.includes("?") ? "&" : "?") + `width=${w}&height=${Math.round(((a.height || 300) * w) / (a.width || w))}`;
         img.onclick = () => lightbox(a.url);
         box.append(img);
+      } else if (ct.startsWith("audio/") || a.waveform || /\.(ogg|mp3|wav|m4a|opus)$/i.test(a.filename)) {
+        box.append(audioPlayer(a));
       } else if (ct.startsWith("video/")) {
         const v = h("video"); v.src = a.url; v.controls = true; v.preload = "metadata"; box.append(v);
       } else {
@@ -538,7 +541,9 @@ function renderMsg(m, prev) {
   for (const s of m.sticker_items || []) {
     const i = h("img", "sticker"); i.src = `https://media.discordapp.net/stickers/${s.id}.webp?size=160`; i.title = s.name; body.append(i);
   }
+  if (m.poll) body.append(renderPoll(m));
   for (const e of m.embeds || []) body.append(renderEmbed(e));
+  if (m.content && !m._deleted) body.append(...inviteCards(m));
   if (m.reactions?.length) body.append(renderReactions(m));
 
   // Eylemler
@@ -554,6 +559,7 @@ function renderMsg(m, prev) {
   }
   if (m._deleted) btn("✕", "Görünümden kaldır", () => el.remove(), "del");
   extraActions(btn, m, el);
+  moreActions(btn, m, el);
   el.append(side, body, act);
   return el;
 }
@@ -731,6 +737,7 @@ async function send() {
   const input = $("#input");
   const text = input.value.trim();
   if ((!text && !S.files.length) || !S.channel || input.disabled) return;
+  if (text.startsWith("/") && !S.files.length && (await runSlash(text))) return;
   const files = S.files.map(({ name, data }) => ({ name, data }));
   input.value = ""; autoGrow(); clearFiles();
   const reply = S.replyTo?.id ?? null;
@@ -1010,6 +1017,7 @@ async function delMsg(m) {
 function autoGrow() { const i = $("#input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, innerHeight * 0.4) + "px"; }
 $("#input").addEventListener("input", autoGrow);
 $("#input").addEventListener("keydown", (e) => {
+  if (slashKey(e)) return;
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   if (e.key === "Escape" && S.replyTo) $("#reply-cancel").click();
   if (e.key === "ArrowUp" && !e.target.value) {

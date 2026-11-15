@@ -29,6 +29,10 @@
     guild("CS2 Esports Hub", [ch("maç-sohbet"), ch("faceit"), ch("takım", 2)]),
     guild("Python Türkiye", [ch("genel"), ch("django"), ch("yardım-kanalı")]),
   ];
+  // Valorant: yonetici yetkisi + roller (moderasyon testleri)
+  Object.assign(guilds[0], { perms: "8", my_top: 10, owner: false });
+  Object.assign(guilds[0].roles, { r1: { name: "Kurucu", color: 15158332, position: 20 }, r2: { name: "Yetkili", color: 3447003, position: 5 }, r3: { name: "Üye", color: 0, position: 1 } });
+  for (const g of guilds) for (const c of g.channels) Object.assign(c, { manage: g === guilds[0], invite: true });
   // Gizli kanal + ses durumu ornekleri
   guilds[0].channels.push(ch("yetkili-odası", 0, { hidden: true, parent_id: guilds[0].channels[0].id }));
   guilds[0].voice_states = [{ user_id: "201", channel_id: guilds[0].channels.find((c) => c.type === 2).id, guild_id: guilds[0].id, user: users[1], self_mute: true }];
@@ -83,6 +87,15 @@
     gifs: ({ query }) => Array.from({ length: 6 }, (_, i) => ({ url: "https://tenor.com/view/test-" + (query || "trend") + "-" + i, src: "data:video/mp4;base64,", width: 200, height: 150 })),
     video_subscribe: () => null, video_frame: () => null, set_video: () => null, stream_active: () => null, watch_stream: () => null, stop_stream: () => null,
     start_stream: () => { const key = 'guild:' + guilds[0].id + ':' + guilds[0].channels.find((c) => c.type === 2).id + ':100'; setTimeout(() => emit('stream-status', { key, sending: true, state: 'connected', detail: { e2ee: true } }), 50); return key; },
+    invite_info: ({ code }) => { if (code === "yok") throw "404 Unknown Invite"; return { code, guild: { id: "999" + code.length, name: "Test Sunucusu", icon: null }, approximate_member_count: 1234, approximate_presence_count: 321 }; },
+    join_invite: ({ code }) => { if (code === "captcha") throw "captcha"; return { guild: { id: "999" } }; },
+    create_invite: () => ({ code: "abc123" }), leave_guild: () => null,
+    app_commands: () => ({ applications: [{ id: "a1", name: "MüzikBot", icon: null }], application_commands: [
+      { id: "c1", application_id: "a1", version: "7", name: "play", description: "Şarkı çal", type: 1, options: [{ type: 3, name: "sarki", description: "", required: true }, { type: 4, name: "ses", description: "" }] },
+      { id: "c2", application_id: "a1", version: "7", name: "queue", description: "Kuyruk", type: 1, options: [{ type: 1, name: "show", description: "Göster", options: [] }, { type: 1, name: "clear", description: "Temizle", options: [] }] },
+    ] }),
+    run_command: () => "nonce-1", poll_vote: () => null, end_poll: () => null, voice_message: () => null, stream_audio: () => null,
+    member_info: () => ({ roles: ["r3"], nick: null }), mod_action: () => null,
     set_ptt: () => null, set_tray: () => null, get_autostart: () => false, set_autostart: ({ enabled }) => enabled,
     set_active_channel: () => null,
     get_messages: ({ channelId, before, around }) => {
@@ -92,9 +105,9 @@
       if (!before) return all;
       return []; // daha eski yok
     },
-    send_message: ({ channelId, content }) => {
+    send_message: ({ channelId, content, poll }) => {
       if (!msgs.has(channelId)) msgs.set(channelId, makeMsgs(channelId));
-      const m = { id: id(), channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), attachments: [], embeds: [], mentions: [], type: 0 };
+      const m = { id: id(), channel_id: channelId, author: me, content, timestamp: new Date().toISOString(), attachments: [], embeds: [], mentions: [], type: 0, ...(poll ? { poll } : {}) };
       msgs.get(channelId)?.push(m);
       setTimeout(() => emit("msg-create", m), 30);
       return m;
