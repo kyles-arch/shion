@@ -182,6 +182,7 @@ async function openPopout(anchor, userId) {
     btn.onclick = () => { closePopout(); openProfileEditor(); };
     pop.querySelector(".pc-body").append(btn);
   }
+  profileExtras(pop, u, prof);
   place();
 }
 document.addEventListener("click", (e) => {

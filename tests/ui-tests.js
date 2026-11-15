@@ -592,6 +592,143 @@ export async function run() {
     assert(!q('#messages .actions button[title="Sabitle"]'), "yetkisiz sunucuda sabitle cikmamali");
   });
 
+  // ---------- Ekstra: hesaplar, FakeNitro, profil, takip, kayıt, taslak, zamanlama, yedek ----------
+  await test("coklu hesap: liste + gecis", async () => {
+    await openAccounts(); await sleep(40);
+    const items = document.querySelectorAll("#modal .acc-item");
+    assert(items.length === 2, "hesap sayisi " + items.length);
+    assert(items[0].classList.contains("cur"), "mevcut hesap isaretli degil");
+    const origReload = location.reload; let reloaded = false;
+    // reload'u engelle (switchAccount sonrasi)
+    window.__noReload = true;
+    const sw = window.switchAccount; window.switchAccount = async (id) => { await invoke("switch_account", { id }); reloaded = id; };
+    items[1].onclick = () => window.switchAccount("555");
+    items[1].click(); await sleep(30);
+    window.switchAccount = sw;
+    assert(called("switch_account").pop()[1].id === "555" && reloaded === "555", "gecis cagrilmadi");
+    closeModal();
+  });
+
+  await test("FakeNitro: baska sunucu / animasyonlu emoji baglantiya donusur", async () => {
+    const g0 = window.__mock.guilds[0];
+    openGuild(g0.id); await openChannel({ ...g0.channels[1], guild_id: g0.id }); await sleep(60);
+    const r = prepareOutgoing("selam <:valo:7001> <:kedi:7002> <a:dans:7003>");
+    assert(r.content.includes("<:valo:7001>"), "kendi sunucu emojisi korunmali: " + r.content);
+    assert(r.content.includes("[kedi](https://cdn.discordapp.com/emojis/7002.webp"), "kedi: " + r.content);
+    assert(r.content.includes("[dans](https://cdn.discordapp.com/emojis/7003.gif"), "dans: " + r.content);
+    const sil = prepareOutgoing("@silent gece gece");
+    assert(sil.silent && sil.content === "gece gece", "silent: " + JSON.stringify(sil));
+    $("#input").value = "@silent <:kedi:7002>"; await send(); await sleep(40);
+    const sm = called("send_message").pop()[1];
+    assert(sm.silent === true && sm.content.startsWith("[kedi]("), "gonderim: " + JSON.stringify(sm));
+  });
+
+  await test("emoji secici tum sunuculari gosterir", async () => {
+    $("#emoji-btn").click(); await sleep(30);
+    const heads = [...document.querySelectorAll(".emoji-pop h5")].map((x) => x.textContent);
+    assert(heads.length >= 3 && heads[1].includes("✨"), "gruplar: " + heads.join("|"));
+    closeEmojiPop();
+  });
+
+  await test("cikartma secici: kendi + FakeNitro", async () => {
+    $("#sticker-btn").click(); await sleep(30);
+    const imgs = document.querySelectorAll(".sticker-pop img");
+    assert(imgs.length === 2, "lottie haric 2 cikartma olmali: " + imgs.length);
+    imgs[0].closest("button").click(); await sleep(40);
+    let sm = called("send_message").pop()[1];
+    assert(JSON.stringify(sm.stickerIds) === '["8003"]', "kendi cikartmasi sticker_ids ile: " + JSON.stringify(sm));
+    $("#sticker-btn").click(); await sleep(30);
+    document.querySelectorAll(".sticker-pop img")[1].closest("button").click(); await sleep(40);
+    sm = called("send_message").pop()[1];
+    assert(!sm.stickerIds && sm.content.includes("media.discordapp.net/stickers/8001.png"), "FakeNitro cikartma: " + JSON.stringify(sm));
+  });
+
+  await test("profil: gizli bilgiler + indirme", async () => {
+    const a = [...document.querySelectorAll("#messages .author[data-pop]")].find((x) => x.dataset.pop !== S.me.id);
+    a.click(); await sleep(150);
+    const sec = q(".popout .pc-hidden");
+    assert(sec, "gizli bilgi bolumu yok");
+    const t = sec.textContent;
+    for (const k of ["Hesap açılışı", "Sunucuya katılım", "Nitro", "ID", "Steam: oyuncu42"]) assert(t.includes(k), k + " yok: " + t);
+    assert(sec.querySelector(".pc-badges img"), "rozet yok");
+    [...sec.querySelectorAll(".pc-dl button")].find((b) => b.textContent.includes("Banner")).click(); await sleep(30);
+    const sv = called("save_media").pop()[1];
+    assert(sv.url.includes("/banners/") && sv.url.includes("size=4096") && sv.name.endsWith(".png"), "indirme: " + JSON.stringify(sv));
+    closePopout();
+  });
+
+  await test("ses kanali kaydi + isim gecmisi", async () => {
+    const g = window.__mock.guilds[0]; const vc = g.channels.find((c) => c.type === 2);
+    window.__mock.emit("voice-state", { user_id: "201", guild_id: g.id, channel_id: vc.id, prev_channel_id: null, user: { id: "201", username: "ali", global_name: "Ali" } });
+    window.__mock.emit("voice-state", { user_id: "201", guild_id: g.id, channel_id: null, prev_channel_id: vc.id, user: { id: "201", username: "ali", global_name: "Ali" } });
+    openVcLog(g.id); await sleep(20);
+    const rows = document.querySelectorAll("#vclog-list .vcl-row");
+    assert(rows.length >= 2 && rows[0].textContent.includes("Ali") && rows[0].textContent.includes("🔴"), "kayit: " + $("#vclog-list").textContent);
+    closeModal();
+    trackUser({ id: "777", username: "eski", global_name: "Eski Ad", avatar: null });
+    window.__mock.emit("presence", { user_id: "777", status: "online", activities: [], user: { id: "777", username: "yeni", global_name: "Eski Ad", avatar: "x" } });
+    const hist = JSON.parse(localStorage.getItem("shion.hist"))["777"];
+    assert(hist?.length === 2 && hist[0].from === "eski" && hist[0].to === "yeni" && hist[1].k === "avatar", "gecmis: " + JSON.stringify(hist));
+  });
+
+  await test("anahtar kelime bildirimi", async () => {
+    const n = KW_HITS.length;
+    window.__mock.emit("unread", { channel_id: "x1", guild_id: null, mention: false, keyword: "maç", author: "Can", content: "akşam maç var", where: "genel", message_id: "1" });
+    await sleep(20);
+    assert(KW_HITS.length === n + 1 && KW_HITS[0].keyword === "maç", "kayit yok");
+    openKeywordHits(); await sleep(10);
+    assert(q("#modal .kw-row")?.textContent.includes("akşam maç var"), "liste yok");
+    closeModal();
+  });
+
+  await test("taslaklar kanal degistirince korunur", async () => {
+    const g = window.__mock.guilds[0];
+    const [a, b] = g.channels.filter((c) => c.type === 0 && !c.hidden);
+    await openChannel({ ...a, guild_id: g.id }); await sleep(40);
+    $("#input").value = "yarim kalan mesaj";
+    await openChannel({ ...b, guild_id: g.id }); await sleep(40);
+    assert($("#input").value === "", "yeni kanalda bos olmali: " + $("#input").value);
+    await openChannel({ ...a, guild_id: g.id }); await sleep(40);
+    assert($("#input").value === "yarim kalan mesaj", "taslak geri gelmedi");
+    await send(); await sleep(30);
+    assert(!cfg.drafts[a.id], "gonderince taslak silinmeli");
+  });
+
+  await test("zamanlanmis mesaj", async () => {
+    $("#input").value = "sonra gelecek";
+    $("#sched-btn").click(); await sleep(20);
+    assert(q("#modal textarea").value === "sonra gelecek", "metin aktarilmadi");
+    q("#modal .btn.primary").click(); await sleep(20);
+    const x = cfg.scheduled.find((y) => y.content === "sonra gelecek");
+    assert(x && x.at > Date.now() + 3000000, "zamanlanmadi");
+    assert($("#input").value === "", "kutu temizlenmedi");
+    x.at = Date.now() - 1; const n = called("send_message").length;
+    await runScheduled(); await sleep(20);
+    assert(called("send_message").length === n + 1 && called("send_message").pop()[1].content === "sonra gelecek", "gonderilmedi");
+    assert(!cfg.scheduled.some((y) => y.id === x.id), "listeden silinmedi");
+  });
+
+  await test("kanal yedekleme (ilerleme)", async () => {
+    const g = window.__mock.guilds[0];
+    await exportChannel({ ...g.channels[1], guild_id: g.id }); await sleep(10);
+    q("#modal .btn.primary").click(); await sleep(400);
+    const body = $("#modal-body").textContent;
+    assert(body.includes("Kaydedildi") && body.includes(".html"), "sonuc: " + body);
+    assert(called("export_channel").pop()[1].format === "html", "format");
+    closeModal();
+  });
+
+  await test("oyun aktivitesi gostergesi + ayarlar", async () => {
+    window.__mock.emit("game", "Valorant"); await sleep(20);
+    assert(q("#me-panel .who small").textContent.includes("Valorant"), "panelde yok");
+    window.__mock.emit("game", null); await sleep(20);
+    assert(!q("#me-panel .who small").textContent.includes("Valorant"), "temizlenmedi");
+    openModal("Ayarlar", settingsView()); await sleep(50);
+    const t = $("#modal-body").textContent;
+    for (const k of ["Gürültü engelleme", "FakeNitro", "Oyun aktivitesi", "Anahtar kelimeler"]) assert(t.includes(k), k + " ayari yok");
+    closeModal();
+  });
+
   await test("yatay tasma yok", async () => {
     assert(document.documentElement.scrollWidth <= innerWidth + 1, "scrollWidth " + document.documentElement.scrollWidth);
   });

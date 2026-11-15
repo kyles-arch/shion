@@ -29,6 +29,12 @@
     guild("CS2 Esports Hub", [ch("maç-sohbet"), ch("faceit"), ch("takım", 2)]),
     guild("Python Türkiye", [ch("genel"), ch("django"), ch("yardım-kanalı")]),
   ];
+  // Emoji / cikartma (FakeNitro testleri)
+  guilds[0].emojis = [{ id: "7001", name: "valo", animated: false }];
+  guilds[1].emojis = [{ id: "7002", name: "kedi", animated: false }, { id: "7003", name: "dans", animated: true }];
+  guilds[1].stickers = [{ id: "8001", name: "selam", format_type: 1 }, { id: "8002", name: "lottie", format_type: 3 }];
+  guilds[0].stickers = [{ id: "8003", name: "gg", format_type: 4 }];
+  const accounts = [{ id: "100", username: "shion", global_name: "Shion", avatar: null }, { id: "555", username: "yanhesap", global_name: "Yan", avatar: null }];
   // Valorant: yonetici yetkisi + roller (moderasyon testleri)
   Object.assign(guilds[0], { perms: "8", my_top: 10, owner: false });
   Object.assign(guilds[0].roles, { r1: { name: "Kurucu", color: 15158332, position: 20 }, r2: { name: "Yetkili", color: 3447003, position: 5 }, r3: { name: "Üye", color: 0, position: 1 } });
@@ -96,6 +102,13 @@
     ] }),
     run_command: () => "nonce-1", poll_vote: () => null, end_poll: () => null, voice_message: () => null, stream_audio: () => null,
     member_info: () => ({ roles: ["r3"], nick: null }), mod_action: () => null,
+    list_accounts: () => accounts.map((a) => ({ ...a, current: a.id === me.id })),
+    switch_account: ({ id }) => { if (!accounts.some((a) => a.id === id)) throw "Hesap bulunamadi"; return null; },
+    add_account: () => null,
+    remove_account: ({ id }) => { const i = accounts.findIndex((a) => a.id === id); if (i >= 0) accounts.splice(i, 1); return null; },
+    set_noise: () => null, set_keywords: () => null, set_game_detect: () => null, cancel_export: () => null,
+    export_channel: async ({ name, format }) => { for (const n of [100, 200, 237]) { await new Promise((r) => setTimeout(r, 20)); emit("export-progress", n); } return "C:\\Users\\x\\Downloads\\Shion\\" + name + "." + format; },
+    save_media: ({ url, name }) => { if (!/^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\//.test(url)) throw "Sadece Discord CDN"; return "C:\\Users\\x\\Downloads\\Shion\\" + name; },
     set_ptt: () => null, set_tray: () => null, get_autostart: () => false, set_autostart: ({ enabled }) => enabled,
     set_active_channel: () => null,
     get_messages: ({ channelId, before, around }) => {
@@ -115,14 +128,14 @@
     deleted_log: () => [], clear_deleted_log: () => null,
     channel_info: ({ channelId }) => ({ id: channelId, name: "yetkili-odası", topic: "Sadece yetkililer", type: 0, overwrites: [{ id: "1", kind: "role", name: "Yetkili", color: 15158332, view: "allow" }], guild_name: "Valorant Türkiye" }),
     voice_devices: () => ({ inputs: ["Mikrofon (Test)"], outputs: ["Hoparlör (Test)"] }),
-    get_profile: ({ userId }) => ({ user: userId === me.id ? me : users[0], user_profile: { bio: "Merhaba! **Shion** kullanıyorum", pronouns: "o", accent_color: 7105791 } }),
+    get_profile: ({ userId, guildId }) => ({ user: userId === me.id ? me : users[0], user_profile: { bio: "Merhaba! **Shion** kullanıyorum", pronouns: "o", accent_color: 7105791, banner: "abc" }, premium_since: "2023-05-01T10:00:00Z", badges: [{ id: "hypesquad", description: "HypeSquad Bravery", icon: "8a88d63823d8a71cd5e390baa45efa02" }], connected_accounts: [{ type: "steam", name: "oyuncu42", verified: true }], ...(guildId ? { guild_member: { joined_at: "2024-02-03T12:00:00Z" } } : {}) }),
     update_profile: (a) => ({ ok: true, ...a }),
   };
   function emit(name, payload) { (listeners.get(name) || []).forEach((cb) => cb({ event: name, payload })); }
   window.__mock = { emit, calls, guilds, dms, me, users, msgs, friends, read_states };
   window.__TAURI__ = {
     // Gercek IPC gibi her zaman kopya dondur (paylasilan referans testleri yaniltir)
-    core: { Channel: class { constructor() { this.onmessage = null; } }, invoke: async (cmd, args = {}, opts) => { calls.push([cmd, args, opts]); const f = handlers[cmd]; const r = f ? f(args) : null; return r == null ? r : structuredClone(r); } },
+    core: { Channel: class { constructor() { this.onmessage = null; } }, invoke: async (cmd, args = {}, opts) => { calls.push([cmd, args, opts]); const f = handlers[cmd]; const r = f ? await f(args) : null; return r == null ? r : structuredClone(r); } },
     event: { listen: async (name, cb) => { if (!listeners.has(name)) listeners.set(name, []); listeners.get(name).push(cb); return () => {}; } },
     opener: { openUrl: (u) => calls.push(["openUrl", u]) },
     notification: { isPermissionGranted: async () => true, requestPermission: async () => "granted", sendNotification: (n) => calls.push(["notify", n]) },

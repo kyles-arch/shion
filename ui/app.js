@@ -291,7 +291,7 @@ function guildMenu(e, g) {
   else items.push({ label: "Yeni klasöre koy", fn: () => { cfg.rail[loc.index] = { type: "f", id: "f" + Date.now(), name: "Yeni klasör", color: null, open: true, guilds: [g.id] }; saveCfg(); renderRail(); } });
   const folders = cfg.rail.filter((x) => x.type === "f" && x !== loc.folder);
   if (folders.length) { items.push("-"); for (const f of folders) items.push({ label: "📁 " + f.name + " klasörüne taşı", fn: () => railMove({ type: "g", id: g.id }, { type: "f", id: f.id }, "merge") }); }
-  items.push(...guildExtraItems(g));
+  items.push(...guildExtraItems(g), ...plusGuildItems(g));
   items.push("-", { label: "Sunucu ID'sini kopyala", fn: () => { navigator.clipboard.writeText(g.id); toast("Kopyalandı"); } });
   showMenu(e, items);
 }
@@ -443,7 +443,7 @@ function renderMe() {
   const u = S.me; if (!u) return;
   const p = $("#me-panel");
   p.innerHTML = `<div class="me-av"><img class="speaking-ring${S.vc.speaking.has(u.id) ? " speaking" : ""}" data-uid="${u.id}" src="${avatarUrl(u, 64)}"><span class="st ${cfg.status}"></span></div>
-    <div class="who"><b>${esc(dname(u))}</b><small>${STATUS[cfg.status]?.[0] ?? "@" + esc(u.username)}</small></div>`;
+    <div class="who"><b>${esc(dname(u))}</b><small>${S.game ? "🎮 " + esc(S.game) : STATUS[cfg.status]?.[0] ?? "@" + esc(u.username)}</small></div>`;
   const mic = h("button", "icon-btn" + (cfg.muted || cfg.deafened ? " off" : ""), cfg.muted || cfg.deafened ? SVG.micOff : SVG.mic);
   mic.title = cfg.muted ? "Mikrofonu aç" : "Mikrofonu kapat";
   mic.onclick = () => { if (cfg.deafened) { cfg.deafened = false; cfg.muted = false; } else cfg.muted = !cfg.muted; applyVoiceFlags(); };
@@ -454,7 +454,7 @@ function renderMe() {
   const openStatus = (e) => showMenu(e, Object.entries(STATUS).map(([k, [label, col]]) => ({
     html: `<span class="dot" style="background:${col}"></span>${label}`,
     fn: () => { cfg.status = k; saveCfg(); pushStatus(); renderMe(); },
-  })).concat(["-", { label: "✏️ Profili düzenle", fn: () => openProfileEditor() }, { label: "👤 Profil kartımı göster", fn: () => openPopout(p.querySelector(".me-av"), u.id) }]));
+  })).concat(["-", { label: "✏️ Profili düzenle", fn: () => openProfileEditor() }, { label: "👤 Profil kartımı göster", fn: () => openPopout(p.querySelector(".me-av"), u.id) }, ...accountMenuItems()]));
   p.querySelector(".me-av").onclick = openStatus;
   p.querySelector(".who").onclick = openStatus;
 }
@@ -645,6 +645,7 @@ async function openChannel(c) {
     return joinVoice(c.guild_id, c.id);
   }
   if (c.type === 4) return;
+  saveDraft();
   S.channel = c; S.replyTo = null; S.noMore = false; S.msgs = []; S.detached = false; hideJumpPresent();
   S.unread.delete(c.id); S.mentions.delete(c.id);
   S.typers.clear(); renderTyping(); clearFiles();
@@ -666,6 +667,7 @@ async function openChannel(c) {
   const input = $("#input");
   input.disabled = c.can_send === false;
   input.placeholder = input.disabled ? "Bu kanala mesaj gönderme iznin yok" : `${c.guild_id ? "#" : "@"}${c.name} kanalına mesaj gönder`;
+  restoreDraft(c);
   $("#messages").innerHTML = '<div class="empty">Yükleniyor…</div>';
   try {
     const list = await invoke("get_messages", { channelId: c.id, before: null });
@@ -739,12 +741,13 @@ async function send() {
   if ((!text && !S.files.length) || !S.channel || input.disabled) return;
   if (text.startsWith("/") && !S.files.length && (await runSlash(text))) return;
   const files = S.files.map(({ name, data }) => ({ name, data }));
-  input.value = ""; autoGrow(); clearFiles();
+  const out = prepareOutgoing(text);
+  input.value = ""; autoGrow(); clearFiles(); saveDraft();
   const reply = S.replyTo?.id ?? null;
   S.replyTo = null; $("#reply-bar").classList.add("hidden");
   lastTyping = 0;
   if (files.length) toast(`${files.length} dosya yükleniyor…`);
-  try { await invoke("send_message", { channelId: S.channel.id, content: text, replyTo: reply, files }); }
+  try { await invoke("send_message", { channelId: S.channel.id, content: out.content, replyTo: reply, files, silent: out.silent }); }
   catch (e) { toast("Gönderilemedi: " + e); input.value = text; }
 }
 
@@ -834,11 +837,15 @@ function openEmojiPicker(anchor, onPick) {
   const guild = S.guilds.find((g) => g.id === S.channel?.guild_id);
   const render = () => {
     const s = q.value.toLowerCase().trim(); grid.textContent = "";
-    const custom = (guild?.emojis || []).filter((e) => !s || e.name.toLowerCase().includes(s));
-    if (custom.length) {
-      grid.append(h("h5", null, esc(guild.name)));
-      for (const e of custom.slice(0, 200)) {
-        const b = h("button", null, emojiHtml(e)); b.title = ":" + e.name + ":";
+    let budget = s ? 600 : 400;
+    for (const g of emojiGroups(guild)) {
+      if (budget <= 0) break;
+      const custom = (g.emojis || []).filter((e) => !s || e.name.toLowerCase().includes(s)).slice(0, budget);
+      if (!custom.length) continue;
+      budget -= custom.length;
+      grid.append(h("h5", null, esc(g.name) + (g !== guild && !hasNitro() ? " ✨" : "")));
+      for (const e of custom) {
+        const b = h("button", null, emojiHtml(e).replace("<img ", '<img loading="lazy" ')); b.title = ":" + e.name + ":";
         b.onclick = () => { onPick(e); closeEmojiPop(); }; grid.append(b);
       }
     }
@@ -1096,6 +1103,7 @@ function settingsView() {
   fr.append(frb); extra.append(fr);
   const vbox = h("div"); root.append(vbox); voiceSettingsSection(vbox);
   extraSettings(root, sec, toggle);
+  plusSettings(root, sec, toggle);
 
   const css = sec("Özel CSS");
   const ta = h("textarea", "css"); ta.value = cfg.customCss; ta.spellcheck = false;
@@ -1170,7 +1178,7 @@ const scheduleRefresh = () => { clearTimeout(refreshTimer); refreshTimer = setTi
 
 listen("gw-ready", () => {
   refreshState();
-  if (cfg.status !== "online" || cfg.customText || cfg.customEmoji) pushStatus();
+  pushStatus(); // durum + ozel durum + oyun aktivitesi (yeniden baglantida da)
 });
 listen("guilds-changed", scheduleRefresh);
 listen("gw-status", (e) => {

@@ -128,6 +128,15 @@ impl Api {
         self.req(token, Method::GET, path, None).await
     }
 
+    /// Kimlik bilgisi gondermeden ham dosya indir (CDN).
+    pub async fn bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+        let res = self.client.get(url).send().await.map_err(|e| format!("Ag hatasi: {e}"))?;
+        if !res.status().is_success() {
+            return Err(format!("{}", res.status()));
+        }
+        res.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+    }
+
     /// Discord disi, kimlik bilgisi gondermeyen GET (ceviri vb.)
     pub async fn external(&self, url: &str, query: &[(&str, &str)]) -> Result<Value, String> {
         let res = self.client.get(url).query(query).send().await.map_err(|e| format!("Ag hatasi: {e}"))?;

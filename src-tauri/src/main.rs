@@ -2,6 +2,7 @@
 
 mod api;
 mod audio;
+mod extra;
 mod gateway;
 mod media;
 mod perms;
@@ -29,6 +30,26 @@ pub struct Core {
     ptt_key: Mutex<Option<String>>,
     pub video: Arc<video::VideoHub>,
     self_video: AtomicBool,
+    presence: Mutex<Presence>,
+    game_detect: AtomicBool,
+    export_cancel: AtomicBool,
+}
+
+#[derive(Default)]
+struct Presence {
+    status: String,
+    custom: Option<Value>,
+    game: Option<Value>,
+}
+
+/// Durum + ozel durum + oyun aktivitesini gateway'e gonder.
+fn send_presence(core: &CoreRef) -> Result<(), String> {
+    let (status, acts) = {
+        let p = core.presence.lock().unwrap();
+        let acts: Vec<Value> = p.custom.iter().chain(p.game.iter()).cloned().collect();
+        (if p.status.is_empty() { "online".to_string() } else { p.status.clone() }, acts)
+    };
+    gw_send(core, json!({"op": 3, "d": {"status": status, "since": 0, "activities": acts, "afk": false}}))
 }
 
 fn gw_send(core: &CoreRef, v: Value) -> Result<(), String> {
@@ -56,6 +77,37 @@ pub type CoreRef = Arc<Core>;
 
 fn token_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("session.dat"))
+}
+
+fn accounts_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("accounts.json"))
+}
+fn read_accounts(app: &AppHandle) -> Vec<Value> {
+    accounts_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+        .unwrap_or_default()
+}
+fn write_accounts(app: &AppHandle, list: &[Value]) {
+    if let Some(p) = accounts_path(app) {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(p, serde_json::to_string(list).unwrap_or_default());
+    }
+}
+/// Gateway + sesi kapat, oturumu sifirla (dosyalara dokunmaz).
+fn stop_session(core: &CoreRef) {
+    if let Some(h) = core.gw.lock().unwrap().take() {
+        h.abort();
+    }
+    *core.gw_tx.lock().unwrap() = None;
+    let mut vm = core.voice.lock().unwrap();
+    vm.stop();
+    vm.channel_id = None;
+    drop(vm);
+    *core.store.lock().unwrap() = store::Store::default();
+    core.presence.lock().unwrap().game = None;
 }
 
 fn tok(core: &CoreRef) -> Result<String, String> {
@@ -121,6 +173,11 @@ async fn login(app: AppHandle, core: State<'_, CoreRef>, token: String, remember
             }
             let _ = std::fs::write(&p, secure::seal(&token));
         }
+        // Coklu hesap listesine ekle/guncelle
+        let mut list = read_accounts(&app);
+        list.retain(|a| a["id"] != me["id"]);
+        list.insert(0, json!({"id": me["id"], "username": me["username"], "global_name": me["global_name"], "avatar": me["avatar"], "token": secure::seal(&token)}));
+        write_accounts(&app, &list);
     }
     {
         let mut s = core.store.lock().unwrap();
@@ -139,19 +196,53 @@ async fn login(app: AppHandle, core: State<'_, CoreRef>, token: String, remember
     Ok(me)
 }
 
+/// Cikis: oturumu kapatir ve bu hesabi kayitli hesaplardan da siler.
 #[tauri::command]
 fn logout(app: AppHandle, core: State<'_, CoreRef>) {
-    if let Some(h) = core.gw.lock().unwrap().take() {
-        h.abort();
-    }
-    let mut vm = core.voice.lock().unwrap();
-    vm.stop();
-    vm.channel_id = None;
-    drop(vm);
-    *core.store.lock().unwrap() = store::Store::default();
+    let me = core.store.lock().unwrap().me_id.clone();
+    stop_session(&core);
     if let Some(p) = token_path(&app) {
         let _ = std::fs::remove_file(p);
     }
+    let mut list = read_accounts(&app);
+    list.retain(|a| a["id"].as_str() != Some(me.as_str()));
+    write_accounts(&app, &list);
+}
+
+#[tauri::command]
+fn list_accounts(app: AppHandle, core: State<'_, CoreRef>) -> Vec<Value> {
+    let me = core.store.lock().unwrap().me_id.clone();
+    read_accounts(&app)
+        .into_iter()
+        .map(|a| json!({"id": a["id"], "username": a["username"], "global_name": a["global_name"], "avatar": a["avatar"], "current": a["id"].as_str() == Some(me.as_str())}))
+        .collect()
+}
+
+/// Kayitli hesaba gec: oturumu kapatir, o hesabin token'ini aktif yapar (arayuz yeniden yuklenir).
+#[tauri::command]
+fn switch_account(app: AppHandle, core: State<'_, CoreRef>, id: String) -> Result<(), String> {
+    let acc = read_accounts(&app).into_iter().find(|a| a["id"].as_str() == Some(id.as_str())).ok_or("Hesap bulunamadi")?;
+    let sealed = acc["token"].as_str().ok_or("Hesap bozuk")?.to_string();
+    secure::open(&sealed).ok_or("Token cozulemedi")?;
+    stop_session(&core);
+    let p = token_path(&app).ok_or("Ayar klasoru yok")?;
+    std::fs::write(p, sealed).map_err(|e| e.to_string())
+}
+
+/// Yeni hesap eklemek icin giris ekranina don (kayitli hesaplar korunur).
+#[tauri::command]
+fn add_account(app: AppHandle, core: State<'_, CoreRef>) {
+    stop_session(&core);
+    if let Some(p) = token_path(&app) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[tauri::command]
+fn remove_account(app: AppHandle, id: String) {
+    let mut list = read_accounts(&app);
+    list.retain(|a| a["id"].as_str() != Some(id.as_str()));
+    write_accounts(&app, &list);
 }
 
 #[tauri::command]
@@ -201,10 +292,17 @@ async fn send_message(
     reply_to: Option<String>,
     files: Option<Vec<FileIn>>,
     poll: Option<Value>,
+    silent: Option<bool>,
+    sticker_ids: Option<Vec<String>>,
 ) -> Result<Value, String> {
     use base64::Engine;
     let t = tok(&core)?;
-    let mut body = json!({"content": content, "nonce": nonce(), "tts": false, "flags": 0});
+    // 4096 = SUPPRESS_NOTIFICATIONS (@silent)
+    let flags = if silent.unwrap_or(false) { 4096 } else { 0 };
+    let mut body = json!({"content": content, "nonce": nonce(), "tts": false, "flags": flags});
+    if let Some(ids) = sticker_ids.filter(|v| !v.is_empty()) {
+        body["sticker_ids"] = json!(ids);
+    }
     if let Some(p) = poll {
         body["poll"] = p;
     }
@@ -342,17 +440,23 @@ async fn stop_ringing(core: State<'_, CoreRef>, channel_id: String) -> Result<()
 /// online | idle | dnd | invisible  (+ istege bagli ozel durum)
 #[tauri::command]
 fn set_status(core: State<'_, CoreRef>, status: String, custom_text: Option<String>, custom_emoji: Option<String>) -> Result<(), String> {
-    let mut activities = vec![];
     let text = custom_text.filter(|t| !t.trim().is_empty());
     let emoji = custom_emoji.filter(|e| !e.is_empty());
-    if text.is_some() || emoji.is_some() {
+    let custom = if text.is_some() || emoji.is_some() {
         let mut a = json!({"name": "Custom Status", "type": 4, "state": text});
         if let Some(e) = emoji {
             a["emoji"] = json!({"name": e});
         }
-        activities.push(a);
+        Some(a)
+    } else {
+        None
+    };
+    {
+        let mut p = core.presence.lock().unwrap();
+        p.status = status;
+        p.custom = custom;
     }
-    gw_send(&core, json!({"op": 3, "d": {"status": status, "since": 0, "activities": activities, "afk": false}}))
+    send_presence(&core)
 }
 
 #[tauri::command]
@@ -831,6 +935,168 @@ async fn mod_action(
     core.api.req_h(&t, m, &path, body, &h).await
 }
 
+#[tauri::command]
+fn set_noise(core: State<'_, CoreRef>, on: bool) {
+    core.voice_ctl.noise.store(on, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn set_keywords(core: State<'_, CoreRef>, words: Vec<String>) {
+    core.store.lock().unwrap().keywords = words.into_iter().map(|w| w.trim().to_lowercase()).filter(|w| w.chars().count() >= 2).collect();
+}
+
+#[tauri::command]
+fn set_game_detect(core: State<'_, CoreRef>, on: bool) {
+    core.game_detect.store(on, Ordering::Relaxed);
+}
+
+fn games_cache(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("games.json"))
+}
+
+/// Tespit edilebilir oyun listesi: diskte 7 gunluk onbellek, yoksa Discord'dan.
+async fn load_games(app: &AppHandle, core: &CoreRef) -> Option<extra::GameMap> {
+    let path = games_cache(app)?;
+    let fresh = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map_or(false, |e| e.as_secs() < 7 * 86400);
+    if fresh {
+        if let Some(m) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
+            return Some(m);
+        }
+    }
+    let list = core.api.external("https://discord.com/api/v9/applications/detectable", &[]).await.ok()?;
+    let map = extra::build_game_map(&list);
+    drop(list);
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default());
+    Some(map)
+}
+
+/// Arka plan: calisan oyunu bul, "Oynuyor" aktivitesi olarak yayinla.
+async fn game_loop(app: AppHandle, core: CoreRef) {
+    let mut map: Option<extra::GameMap> = None;
+    let mut current: Option<String> = None;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        let on = core.game_detect.load(Ordering::Relaxed) && core.gw_tx.lock().unwrap().is_some();
+        let found = if on {
+            if map.is_none() {
+                map = load_games(&app, &core).await;
+            }
+            match &map {
+                Some(m) => {
+                    let m2 = m.clone();
+                    tauri::async_runtime::spawn_blocking(move || extra::detect(&m2, &extra::running_exes())).await.ok().flatten()
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let id = found.as_ref().map(|f| f.0.clone());
+        let lost_presence = id.is_some() && core.presence.lock().unwrap().game.is_none();
+        if id == current && !lost_presence {
+            continue;
+        }
+        current = id;
+        core.presence.lock().unwrap().game = found.as_ref().map(|(id, name)| extra::game_activity(id, name, store::now_ms()));
+        let _ = send_presence(&core);
+        let _ = tauri::Emitter::emit(&app, "game", found.map(|f| f.1));
+    }
+}
+
+/// Kanal gecmisini Indirilenler/Shion klasorune HTML veya JSON olarak yaz.
+#[tauri::command]
+async fn export_channel(app: AppHandle, core: State<'_, CoreRef>, channel_id: String, name: String, format: String) -> Result<String, String> {
+    let t = tok(&core)?;
+    core.export_cancel.store(false, Ordering::Relaxed);
+    let mut all: Vec<Value> = Vec::new();
+    let mut before: Option<String> = None;
+    loop {
+        if core.export_cancel.load(Ordering::Relaxed) {
+            return Err("iptal".into());
+        }
+        let mut p = format!("/channels/{channel_id}/messages?limit=100");
+        if let Some(b) = &before {
+            p.push_str(&format!("&before={b}"));
+        }
+        let page = core.api.get(&t, &p).await?;
+        let list = page.as_array().cloned().unwrap_or_default();
+        let n = list.len();
+        before = list.last().and_then(|m| m["id"].as_str()).map(String::from);
+        all.extend(list);
+        let _ = tauri::Emitter::emit(&app, "export-progress", all.len());
+        if n < 100 || before.is_none() {
+            break;
+        }
+    }
+    all.reverse();
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?.join("Shion");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let date = chrono_like_date();
+    let (data, ext) = if format == "json" {
+        (serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?, "json")
+    } else {
+        (extra::export_html(&name, &all), "html")
+    };
+    let file = dir.join(format!("{}-{date}.{ext}", extra::safe_name(&name)));
+    std::fs::write(&file, data).map_err(|e| e.to_string())?;
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let _ = app.opener().reveal_item_in_dir(&file);
+    }
+    Ok(file.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn cancel_export(core: State<'_, CoreRef>) {
+    core.export_cancel.store(true, Ordering::Relaxed);
+}
+
+/// YYYYMMDD-HHMM (UTC)
+fn chrono_like_date() -> String {
+    let secs = (store::now_ms() / 1000) as i64;
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    // Howard Hinnant civil_from_days
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}{m:02}{d:02}-{:02}{:02}", rem / 3600, rem % 3600 / 60)
+}
+
+/// Avatar / banner / emoji / cikartma indir (sadece Discord CDN), klasorde goster.
+#[tauri::command]
+async fn save_media(app: AppHandle, core: State<'_, CoreRef>, url: String, name: String) -> Result<String, String> {
+    if !extra::allowed_media(&url) {
+        return Err("Sadece Discord CDN".into());
+    }
+    let data = core.api.bytes(&url).await?;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?.join("Shion");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = extra::safe_name(&name);
+    let mut file = dir.join(&name);
+    let mut i = 1;
+    while file.exists() {
+        let (stem, ext) = name.rsplit_once('.').unwrap_or((&name, ""));
+        file = dir.join(format!("{stem} ({i}).{ext}"));
+        i += 1;
+    }
+    std::fs::write(&file, data).map_err(|e| e.to_string())?;
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let _ = app.opener().reveal_item_in_dir(&file);
+    }
+    Ok(file.to_string_lossy().into_owned())
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -851,6 +1117,9 @@ fn main() {
         ptt_key: Mutex::new(None),
         video: Arc::new(video::VideoHub::default()),
         self_video: AtomicBool::new(false),
+        presence: Mutex::new(Presence::default()),
+        game_detect: AtomicBool::new(false),
+        export_cancel: AtomicBool::new(false),
     });
     let ptt_ctl = core.voice_ctl.clone();
     let close_core = core.clone();
@@ -899,6 +1168,7 @@ fn main() {
                     let _ = w.hide();
                 }
             }
+            tauri::async_runtime::spawn(game_loop(app.handle().clone(), setup_core.clone()));
             // Silinen mesaj kaydini periyodik olarak diske yaz
             let h = app.handle().clone();
             let c = setup_core.clone();
@@ -978,7 +1248,17 @@ fn main() {
             voice_message,
             stream_audio,
             member_info,
-            mod_action
+            mod_action,
+            list_accounts,
+            switch_account,
+            add_account,
+            remove_account,
+            set_noise,
+            set_keywords,
+            set_game_detect,
+            export_channel,
+            cancel_export,
+            save_media
         ])
         .run(tauri::generate_context!())
         .expect("Shion baslatilamadi");

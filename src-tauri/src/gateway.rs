@@ -286,9 +286,14 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             if s.active_channel == ch {
                 let _ = app.emit("msg-create", d);
             } else {
-                let mention = is_mention(&s, d) && d["author"]["id"].as_str() != Some(s.me_id.as_str());
-                let mut ev = json!({"channel_id": ch, "guild_id": d["guild_id"], "mention": mention});
-                if mention {
+                let mine = d["author"]["id"].as_str() == Some(s.me_id.as_str());
+                let mention = is_mention(&s, d) && !mine;
+                let keyword = if mine || mention { None } else { s.keyword_hit(d["content"].as_str().unwrap_or("")) };
+                let mut ev = json!({"channel_id": ch, "guild_id": d["guild_id"], "mention": mention, "message_id": d["id"]});
+                if let Some(k) = &keyword {
+                    ev["keyword"] = json!(k);
+                }
+                if mention || keyword.is_some() {
                     let (_, gname, cname) = s.names(&ch);
                     let a = &d["author"];
                     ev["author"] = json!(a["global_name"].as_str().or(a["username"].as_str()).unwrap_or("?"));
@@ -324,7 +329,7 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
         "PRESENCE_UPDATE" => {
             let id = d["user"]["id"].as_str().unwrap_or("").to_string();
             if s.on_presence(d) {
-                let _ = app.emit("presence", json!({"user_id": id, "status": d["status"], "activities": d["activities"]}));
+                let _ = app.emit("presence", json!({"user_id": id, "status": d["status"], "activities": d["activities"], "user": d["user"]}));
             }
         }
         "USER_GUILD_SETTINGS_UPDATE" => {

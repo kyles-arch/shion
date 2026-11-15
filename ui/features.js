@@ -73,6 +73,8 @@ function channelMenu(e, c, gid) {
     { label: "Okundu olarak işaretle", fn: () => { ackChannel(c.id, last); renderRail(); renderSidebar(); } },
     { label: S.mutedChannels.has(c.id) ? "🔔 Sesi aç" : "🔕 Sessize al", fn: () => toggleMute(gid, c.id) },
     "-",
+    ...plusChannelItems(c, gid),
+    "-",
     { label: "Kanal ID'sini kopyala", fn: () => { navigator.clipboard.writeText(c.id); toast("Kopyalandı"); } },
   ]);
 }

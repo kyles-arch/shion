@@ -36,6 +36,7 @@ pub struct Guild {
     pub channels: HashMap<String, Value>,
     pub threads: HashMap<String, Value>,
     pub emojis: Vec<Value>,
+    pub stickers: Vec<Value>,
     /// user_id -> ses durumu
     pub voice_states: HashMap<String, Value>,
     pub my_roles: Vec<String>,
@@ -67,6 +68,8 @@ pub struct Store {
     pub deleted_dirty: bool,
     /// gateway oturum kimligi (slash komutlari icin)
     pub gw_session: String,
+    /// Anahtar kelime bildirimleri (kucuk harf)
+    pub keywords: Vec<String>,
 }
 
 impl Store {
@@ -212,6 +215,7 @@ impl Store {
             guild.threads.insert(st(&t["id"]), t);
         }
         guild.emojis = arr(&g["emojis"]).to_vec();
+        guild.stickers = arr(&g["stickers"]).to_vec();
         for vs in arr(&g["voice_states"]) {
             if vs["channel_id"].is_string() {
                 guild.voice_states.insert(st(&vs["user_id"]), vs.clone());
@@ -296,9 +300,15 @@ impl Store {
                     .filter(|e| e["available"] != false)
                     .map(|e| json!({"id": e["id"], "name": e["name"], "animated": e["animated"]}))
                     .collect();
+                let stickers: Vec<Value> = g
+                    .stickers
+                    .iter()
+                    .filter(|e| e["available"] != false)
+                    .map(|e| json!({"id": e["id"], "name": e["name"], "format_type": e["format_type"]}))
+                    .collect();
                 let voice: Vec<Value> = g.voice_states.values().map(|v| self.voice_summary(v)).collect();
                 let my_top = g.my_roles.iter().filter_map(|r| g.roles.get(r)).map(|r| r["position"].as_i64().unwrap_or(0)).max().unwrap_or(0);
-                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "voice_states": voice})
+                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "stickers": stickers, "voice_states": voice})
             })
             .collect()
     }
@@ -459,14 +469,16 @@ impl Store {
         })
     }
 
-    /// VOICE_STATE_UPDATE isle; arayuze gidecek sade durumu dondurur.
+    /// VOICE_STATE_UPDATE isle; arayuze gidecek sade durumu dondurur (onceki kanal dahil).
     pub fn on_voice_state(&mut self, v: &Value) -> Value {
         if v["member"]["user"].is_object() {
             self.cache_user(&v["member"]["user"]);
         }
         let uid = st(&v["user_id"]);
+        let mut prev = Value::Null;
         if let Some(gid) = v["guild_id"].as_str() {
             if let Some(g) = self.guild_mut(gid) {
+                prev = g.voice_states.get(&uid).map(|o| o["channel_id"].clone()).unwrap_or(Value::Null);
                 if v["channel_id"].is_string() {
                     g.voice_states.insert(uid, v.clone());
                 } else {
@@ -474,7 +486,25 @@ impl Store {
                 }
             }
         }
-        self.voice_summary(v)
+        let mut sum = self.voice_summary(v);
+        sum["prev_channel_id"] = prev;
+        sum
+    }
+
+    /// Mesaj icerigi kayitli anahtar kelimelerden birini iceriyorsa onu dondurur.
+    pub fn keyword_hit(&self, content: &str) -> Option<String> {
+        if self.keywords.is_empty() || content.is_empty() {
+            return None;
+        }
+        let low = content.to_lowercase();
+        self.keywords.iter().find(|k| {
+            // kelime siniri: harf/rakam ile cevrili degilse
+            low.match_indices(k.as_str()).any(|(i, _)| {
+                let before = low[..i].chars().next_back();
+                let after = low[i + k.len()..].chars().next();
+                !before.map_or(false, |c| c.is_alphanumeric()) && !after.map_or(false, |c| c.is_alphanumeric())
+            })
+        }).cloned()
     }
 
     pub fn upsert_thread(&mut self, t: &Value) {
@@ -671,6 +701,18 @@ mod tests {
         assert_eq!(s.guild("g").unwrap().voice_states.len(), 1);
         s.on_voice_state(&json!({"guild_id": "g", "user_id": "u", "channel_id": null}));
         assert!(s.guild("g").unwrap().voice_states.is_empty());
+    }
+
+    #[test]
+    fn keyword_matching_word_boundary() {
+        let mut s = Store::default();
+        s.keywords = vec!["shion".into(), "maç".into()];
+        assert_eq!(s.keyword_hit("Shion çok iyi"), Some("shion".into()));
+        assert_eq!(s.keyword_hit("akşam MAÇ var mı?"), Some("maç".into()));
+        assert_eq!(s.keyword_hit("shionlar"), None);
+        assert_eq!(s.keyword_hit("hiçbir şey"), None);
+        let v = s.on_voice_state(&json!({"user_id": "5", "guild_id": "g", "channel_id": "c1"}));
+        assert!(v["prev_channel_id"].is_null());
     }
 
     #[test]

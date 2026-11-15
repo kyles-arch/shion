@@ -606,3 +606,33 @@ body.ptt-down #me-panel .me-av img { box-shadow: 0 0 0 3px #23a55a; }
 .role-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
 .role-item:hover { background: var(--bg-3); } .role-item.off { opacity: .45; cursor: not-allowed; }
 .role-item .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+
+/* ===== plus.js ===== */
+.acc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; text-align: left; }
+.acc-list.big { min-width: 340px; } .acc-list .btn.primary { margin-top: 8px; }
+.acc-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--border); cursor: pointer; }
+.acc-item:hover { border-color: var(--accent); } .acc-item.cur { cursor: default; border-color: #23a55a; }
+.acc-item img { width: 36px; height: 36px; border-radius: 50%; }
+.acc-item div { flex: 1; min-width: 0; } .acc-item b, .acc-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-item small { color: var(--muted); font-size: 12px; } .acc-x { opacity: .5; } .acc-x:hover { opacity: 1; color: #ed4245; }
+.acc-or { text-align: center; margin-top: 4px; }
+.sticker-pop { width: 360px; }
+.sticker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; max-height: 340px; overflow-y: auto; padding: 4px; }
+.sticker-grid h5 { grid-column: 1 / -1; margin: 6px 2px 0; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.sticker-grid button { aspect-ratio: 1; border-radius: 8px; padding: 4px; background: transparent; }
+.sticker-grid button:hover { background: var(--bg-3); } .sticker-grid button.locked { opacity: .4; }
+.sticker-grid img { width: 100%; height: 100%; object-fit: contain; }
+.pc-hidden .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 2px 0; }
+.pc-hidden .kv span { color: var(--muted); white-space: nowrap; } .pc-hidden .kv b { font-weight: 500; text-align: right; }
+.pc-hidden .copy { cursor: pointer; font-family: ui-monospace, monospace; } .pc-hidden .copy:hover { color: var(--accent); }
+.pc-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; } .pc-badges img { width: 22px; height: 22px; }
+.pc-conns { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; } .pc-conns .chip { font-size: 11px; }
+.pc-hist h5 { margin: 8px 0 2px; }
+.pc-dl { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.vclog { max-height: 60vh; overflow-y: auto; min-width: 420px; font-size: 13px; }
+.vcl-row { padding: 4px 2px; border-bottom: 1px solid var(--border); } .vcl-row i { color: var(--accent); font-style: normal; }
+.kw-line { display: flex; gap: 6px; width: 100%; } .kw-line .inp { flex: 1; }
+.row.col { flex-direction: column; align-items: stretch; gap: 6px; }
+.kw-row { padding: 8px; border-radius: 8px; cursor: pointer; border-bottom: 1px solid var(--border); } .kw-row:hover { background: var(--bg-3); }
+.sched textarea { resize: vertical; } .sched-quick { display: flex; gap: 6px; margin: 6px 0; }
+.sched-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--bg-2); border-radius: 8px; margin: 4px 0; } .sched-row > div { flex: 1; min-width: 0; }

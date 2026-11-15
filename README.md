@@ -42,14 +42,25 @@ Electron yerine **Tauri 2** (sistemdeki WebView2) + **Rust** arka uç. Gateway (
 - **Sesli mesajlar** — 🎤 ile kaydet, Rust tarafında Ogg/Opus'a çevrilip dalga formuyla gönderilir; gelenler dalga formlu oynatıcıda çalınır.
 - **Moderasyon** — yetkin varsa üyeye sağ tık: zaman aşımı, at, yasakla (sebep ile denetim kaydına), takma ad, rol düzenle (senden üstteki roller kilitli); mesajlarda sabitle/kaldır ve başkasının mesajını silme.
 
+- **Gürültü engelleme** 🎧 — mikrofon sesi RNNoise (`nnnoiseless`, saf Rust) ile temizlenir; cihazında çalışır, ayarlardan kapatılabilir.
+- **Çoklu hesap** 👥 — "Beni hatırla" ile giriş yapılan hesaplar listelenir; profil menüsünden tek tıkla geçiş / hesap ekleme. Token'lar DPAPI ile şifreli.
+- **FakeNitro** ✨ — Nitro yoksa başka sunucuların ve animasyonlu emojiler, çıkartmalar bağlantı olarak gönderilir; emoji seçicide tüm sunucuların emojileri, 🗒️ ile çıkartma seçici.
+- **Gizli profil bilgileri** 🕵 — hesap açılış tarihi/saati ve yaşı, sunucuya katılım, Nitro/takviye tarihleri, rozetler, bağlı hesaplar, ID; avatar/banner indirme.
+- **Ses kanalı kaydı** — sunucu menüsü → kimin hangi ses kanalına girip çıktığı; bulunduğun kanala giren/çıkan için bildirim.
+- **Arkadaş takibi** — profil kartından 🔔 Takip et: çevrimiçi olunca / oyuna girince bildirim. Arkadaşların isim ve avatar değişiklikleri yerel olarak kaydedilir.
+- **Anahtar kelime bildirimleri** 🔔, **sessiz mesaj** (`@silent` ile başla), **zamanlanmış mesaj** ⏰, **kanal başına taslak**.
+- **Oyun aktivitesi** 🎮 — açık oyun Discord'un oyun listesine göre algılanır, profilinde "Oynuyor" olarak görünür.
+- **Kanal yedekleme** — kanala sağ tık → tüm geçmiş HTML veya JSON olarak `İndirilenler\Shion` klasörüne.
+- **Medya indirme** — mesajdaki resim/emoji/çıkartmaya sağ tık → İndir / bağlantıyı kopyala.
+
 **Bilinen sınırlar:** ses/kamera/yayın Discord protokolüne göre yazıldı ama gerçek hesapla henüz denenmedi. Davetle katılırken Discord captcha isterse Shion bunu çözemez; daveti tarayıcıda açmayı önerir. Otomatik güncelleme yok (bir güncelleme sunucusu/GitHub deposu gerekir) ve exe imzasız olduğu için Windows SmartScreen uyarısı çıkar.
 
 ## Testler
 ```bash
-cd src-tauri && cargo test          # 31 Rust birim testi (izinler, mesaj kaydı, okuma durumu, anket oyları, DPAPI, RTP şifreleme, H264 paketleme, RTCP, DAVE, Opus, Ogg/sesli mesaj, yeniden örnekleme)
+cd src-tauri && cargo test          # 36 Rust birim testi (izinler, mesaj kaydı, okuma durumu, anket oyları, anahtar kelimeler, DPAPI, RTP şifreleme, H264 paketleme, RTCP, DAVE, Opus, Ogg/sesli mesaj, gürültü engelleme, oyun algılama, HTML yedek, yeniden örnekleme)
 node tests/serve.mjs                # arayüzü sahte Discord verisiyle http://localhost:5174 adresinde açar
 ```
-Tarayıcı konsolunda arayüz testleri (51 senaryo; davet, slash, anket, sesli mesaj kaydı, moderasyon ve WebCodecs ile gerçek H264 kodlama→çözme dahil): `await (await import('/__test/ui-tests.js')).run()`
+Tarayıcı konsolunda arayüz testleri (62 senaryo; çoklu hesap, FakeNitro, gizli profil, ses kaydı, taslak, zamanlama, yedekleme, davet, slash, anket, sesli mesaj kaydı, moderasyon ve WebCodecs ile gerçek H264 kodlama→çözme dahil): `await (await import('/__test/ui-tests.js')).run()`
 
 ## Derleme
 Gerekenler: Node.js, [Rust](https://rustup.rs) (MSVC toolchain), Visual Studio C++ Build Tools, WebView2 (Windows 11'de hazır).

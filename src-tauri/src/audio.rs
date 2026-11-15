@@ -24,6 +24,8 @@ pub struct VoiceCtl {
     /// Bas-konus modu ve tusun basili olup olmadigi
     pub ptt_mode: AtomicBool,
     pub ptt_pressed: AtomicBool,
+    /// RNNoise gurultu engelleme
+    pub noise: AtomicBool,
 }
 
 impl Default for VoiceCtl {
@@ -38,6 +40,7 @@ impl Default for VoiceCtl {
             output_device: Mutex::new(None),
             ptt_mode: AtomicBool::new(false),
             ptt_pressed: AtomicBool::new(false),
+            noise: AtomicBool::new(true),
         }
     }
 }
@@ -84,6 +87,31 @@ impl Resampler {
         }
         self.pos = t - n as f64;
         self.last = input[n - 1];
+    }
+}
+
+/// RNNoise (nnnoiseless) ile 48 kHz mono gurultu engelleme. 480 orneklik (10 ms) bloklarla calisir.
+pub struct Denoiser {
+    st: Box<nnnoiseless::DenoiseState<'static>>,
+    pending: Vec<f32>,
+    frame_out: [f32; nnnoiseless::DenoiseState::FRAME_SIZE],
+}
+
+impl Denoiser {
+    pub const FRAME: usize = nnnoiseless::DenoiseState::FRAME_SIZE;
+    pub fn new() -> Self {
+        Self { st: nnnoiseless::DenoiseState::new(), pending: Vec::with_capacity(Self::FRAME * 4), frame_out: [0.0; Self::FRAME] }
+    }
+    /// Girdi -1..1 araliginda; tam bloklar islenip `out`a eklenir (kalan bir sonraki cagriya kalir).
+    pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        self.pending.extend(input.iter().map(|v| v * 32767.0));
+        let mut done = 0;
+        while self.pending.len() - done >= Self::FRAME {
+            self.st.process_frame(&mut self.frame_out, &self.pending[done..done + Self::FRAME]);
+            out.extend(self.frame_out.iter().map(|v| (v / 32767.0).clamp(-1.0, 1.0)));
+            done += Self::FRAME;
+        }
+        self.pending.drain(..done);
     }
 }
 
@@ -269,11 +297,23 @@ fn build_input(ctl: &Arc<VoiceCtl>, mic_tx: SyncSender<Vec<f32>>) -> Result<Stre
     let ch = cfg.channels.max(1) as usize;
     let mut rs = Resampler::new(cfg.sample_rate.0, RATE);
     let err = |e| eprintln!("giris hatasi: {e}");
+    let ctl = ctl.clone();
+    let mut dn = Denoiser::new();
+    let mut tmp = Vec::new();
 
-    // Cok kanalli -> mono -> 48 kHz
+    // Cok kanalli -> mono -> 48 kHz (-> gurultu engelleme)
     let mut push = move |mono: &[f32]| {
         let mut out = Vec::with_capacity(mono.len() * 2);
-        rs.process(mono, &mut out);
+        if ctl.noise.load(Ordering::Relaxed) {
+            tmp.clear();
+            rs.process(mono, &mut tmp);
+            dn.process(&tmp, &mut out);
+            if out.is_empty() {
+                return;
+            }
+        } else {
+            rs.process(mono, &mut out);
+        }
         let _ = mic_tx.try_send(out);
     };
     let mut mono = Vec::new();
@@ -329,6 +369,28 @@ mod tests {
         // 1 saniye 44.1k -> ~48k ornek
         assert!((out.len() as i64 - 48_000).abs() < 10, "{}", out.len());
         assert!(out.iter().all(|v| (*v - 0.5).abs() < 1e-4 || out.len() < 2));
+    }
+
+    #[test]
+    fn denoiser_blocks_and_suppresses_noise() {
+        let mut d = Denoiser::new();
+        let mut out = Vec::new();
+        // 1 sn beyaz gurultu (basit LCG), duzensiz blok boyutlariyla
+        let mut x: u32 = 12345;
+        let noise: Vec<f32> = (0..48_000)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                ((x >> 16) as f32 / 32768.0 - 1.0) * 0.05
+            })
+            .collect();
+        for c in noise.chunks(333) {
+            d.process(c, &mut out);
+        }
+        assert_eq!(out.len() % Denoiser::FRAME, 0);
+        assert!(out.len() >= 48_000 - Denoiser::FRAME);
+        let e_in: f32 = noise[24_000..].iter().map(|v| v * v).sum();
+        let e_out: f32 = out[24_000..].iter().map(|v| v * v).sum();
+        assert!(e_out < e_in * 0.5, "gurultu bastirilmadi: {e_out} / {e_in}");
     }
 
     #[test]
