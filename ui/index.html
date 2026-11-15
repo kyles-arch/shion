@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="tr" data-theme="gece">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shion</title>
+  <link rel="stylesheet" href="themes.css">
+  <link rel="stylesheet" href="style.css">
+  <style id="custom-css"></style>
+</head>
+<body>
+  <!-- GIRIS -->
+  <section id="login" class="screen">
+    <div class="login-card">
+      <div class="logo">S</div>
+      <h1>Shion</h1>
+      <p class="muted">Hafif, Rust tabanlı Discord istemcisi</p>
+      <input id="token" type="password" placeholder="Discord token" autocomplete="off" spellcheck="false">
+      <label class="check"><input id="remember" type="checkbox" checked> Beni hatırla</label>
+      <button id="login-btn" class="btn primary">Giriş yap</button>
+      <p id="login-err" class="err"></p>
+      <p class="warn">⚠ Üçüncü parti istemciler Discord kurallarına aykırıdır; hesabın kısıtlanabilir. Kendi sorumluluğunda kullan.</p>
+    </div>
+  </section>
+
+  <!-- UYGULAMA -->
+  <section id="app" class="hidden">
+    <nav id="rail">
+      <button class="rail-btn home active" id="home-btn" title="Direkt Mesajlar">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z" fill="currentColor"/></svg>
+      </button>
+      <div class="rail-sep"></div>
+      <div id="guild-list"></div>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn tool" id="log-btn" title="Silinen mesajlar">
+        <svg viewBox="0 0 24 24"><path d="M6 7h12l-1 13H7zM9 4h6l1 2H8z" fill="currentColor"/></svg>
+        <span class="badge hidden" id="log-badge"></span>
+      </button>
+      <button class="rail-btn tool" id="settings-btn" title="Ayarlar">
+        <svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm8.4 4.6-.1-2.2 2-1.6-2-3.4-2.4.9-1.8-1.1L15.7 3h-3.9l-.4 2.6-1.9 1.1-2.4-.9-2 3.4 2 1.6v2.2l-2 1.6 2 3.4 2.4-.9 1.9 1.1.4 2.6h3.9l.4-2.6 1.8-1.1 2.4.9 2-3.4z" fill="currentColor"/></svg>
+      </button>
+    </nav>
+
+    <aside id="sidebar">
+      <header id="sb-title">Direkt Mesajlar</header>
+      <div id="channel-list" class="scroll"></div>
+      <div id="voice-panel" class="hidden"></div>
+      <footer id="me-panel"></footer>
+    </aside>
+
+    <main id="chat">
+      <header id="chat-header">
+        <span id="ch-icon">#</span>
+        <span id="ch-name">Shion</span>
+        <span id="ch-topic"></span>
+        <button id="call-btn" class="hdr-btn hidden" title="Sesli arama başlat">
+          <svg viewBox="0 0 24 24"><path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z" fill="currentColor"/></svg>
+        </button>
+        <button id="search-btn" class="hdr-btn hidden" title="Mesajlarda ara (Ctrl+F)">
+          <svg viewBox="0 0 24 24"><path d="M10 3a7 7 0 1 0 4.2 12.6l4.6 4.6 1.4-1.4-4.6-4.6A7 7 0 0 0 10 3zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" fill="currentColor"/></svg>
+        </button>
+        <button id="pins-btn" class="hdr-btn hidden" title="Sabitlenmiş mesajlar">
+          <svg viewBox="0 0 24 24"><path d="M15 3l6 6-3 1-4 4 1 5-2 2-4-4-5 5-1-1 5-5-4-4 2-2 5 1 4-4z" fill="currentColor"/></svg>
+        </button>
+        <button id="bookmarks-btn" class="hdr-btn" title="Yer imleri">
+          <svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z" fill="currentColor"/></svg>
+        </button>
+        <button id="members-btn" class="hdr-btn hidden" title="Üye listesi">
+          <svg viewBox="0 0 24 24"><path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7 0a3 3 0 1 0 0-6M2 21c0-4 3-6 7-6s7 2 7 6zm15-6c3 0 5 2 5 6h-4" fill="currentColor"/></svg>
+        </button>
+        <span id="gw-dot" title="Bağlantı"></span>
+      </header>
+      <div id="call-bar" class="hidden"></div>
+      <div id="messages" class="scroll"><div class="empty">Soldan bir kanal seç ✨</div></div>
+      <div id="hidden-view" class="scroll hidden"></div>
+      <div id="forum-view" class="scroll hidden"></div>
+      <div id="friends-view" class="scroll hidden"></div>
+      <button id="jump-present" class="hidden">Günümüze dön ↓</button>
+      <div id="composer" class="hidden">
+        <div id="reply-bar" class="hidden"><span></span><button id="reply-cancel">✕</button></div>
+        <div id="file-bar" class="hidden"></div>
+        <div class="input-row">
+          <button id="attach-btn" class="cmp-btn" title="Dosya ekle">＋</button>
+          <textarea id="input" rows="1" placeholder="Mesaj yaz..."></textarea>
+          <button id="gif-btn" class="cmp-btn gif" title="GIF">GIF</button>
+          <button id="emoji-btn" class="cmp-btn" title="Emoji">😊</button>
+        </div>
+        <div id="typing"></div>
+        <input id="file-input" type="file" multiple hidden>
+      </div>
+      <div id="drop-zone" class="hidden"><div>📁 Göndermek için bırak</div></div>
+    </main>
+
+    <aside id="members" class="scroll hidden"></aside>
+  </section>
+
+  <!-- MODAL -->
+  <div id="modal" class="hidden">
+    <div class="modal-box">
+      <header><h2 id="modal-title"></h2><button id="modal-close">✕</button></header>
+      <div id="modal-body" class="scroll"></div>
+    </div>
+  </div>
+
+  <div id="call-card" class="hidden"></div>
+  <div id="toast"></div>
+  <script src="app.js"></script>
+  <script src="extras.js"></script>
+  <script src="features.js"></script>
+  <script src="video.js"></script>
+</body>
+</html>

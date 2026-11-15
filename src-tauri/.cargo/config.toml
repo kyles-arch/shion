@@ -1,0 +1,3 @@
+# Opus (audiopus_sys) kaynaktan CMake ile derlenir; VS Build Tools'un kendi CMake'i kullanilir.
+[env]
+CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"

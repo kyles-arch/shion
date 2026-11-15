@@ -1,0 +1,83 @@
+/* Her tema sadece renk degiskenlerini tanimlar. Kendi temani "Ozel CSS" kismina yazabilirsin. */
+:root,
+[data-theme="gece"] {
+  --bg-0: #0b0d12; --bg-1: #12151c; --bg-2: #171a22; --bg-3: #1f2330; --bg-4: #2a2f3e;
+  --text: #e6e8ef; --muted: #8b91a3; --accent: #7c6cff; --accent-2: #4fd1c5;
+  --danger: #ff5c7a; --ok: #3ddc97; --border: #232838; --mention: rgba(124,108,255,.14);
+  --deleted: rgba(255,92,122,.10); --shadow: 0 10px 40px rgba(0,0,0,.45);
+}
+[data-theme="klasik"] {
+  --bg-0: #1e1f22; --bg-1: #2b2d31; --bg-2: #313338; --bg-3: #383a40; --bg-4: #404249;
+  --text: #dbdee1; --muted: #949ba4; --accent: #5865f2; --accent-2: #23a55a;
+  --danger: #f23f43; --ok: #23a55a; --border: #26282c; --mention: rgba(250,168,26,.1);
+  --deleted: rgba(242,63,67,.10); --shadow: 0 8px 30px rgba(0,0,0,.4);
+}
+[data-theme="amoled"] {
+  --bg-0: #000; --bg-1: #050505; --bg-2: #000; --bg-3: #111; --bg-4: #1c1c1c;
+  --text: #f2f2f2; --muted: #7a7a7a; --accent: #ffffff; --accent-2: #9ae6b4;
+  --danger: #ff4d4d; --ok: #4dff88; --border: #161616; --mention: rgba(255,255,255,.07);
+  --deleted: rgba(255,77,77,.09); --shadow: 0 0 0 1px #222;
+}
+[data-theme="nord"] {
+  --bg-0: #242933; --bg-1: #2e3440; --bg-2: #333a47; --bg-3: #3b4252; --bg-4: #434c5e;
+  --text: #eceff4; --muted: #9aa5b8; --accent: #88c0d0; --accent-2: #a3be8c;
+  --danger: #bf616a; --ok: #a3be8c; --border: #3b4252; --mention: rgba(136,192,208,.12);
+  --deleted: rgba(191,97,106,.14); --shadow: 0 10px 30px rgba(0,0,0,.35);
+}
+[data-theme="dracula"] {
+  --bg-0: #191a21; --bg-1: #21222c; --bg-2: #282a36; --bg-3: #343746; --bg-4: #44475a;
+  --text: #f8f8f2; --muted: #9ea8c7; --accent: #bd93f9; --accent-2: #50fa7b;
+  --danger: #ff5555; --ok: #50fa7b; --border: #2f3140; --mention: rgba(255,121,198,.12);
+  --deleted: rgba(255,85,85,.12); --shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+[data-theme="mocha"] {
+  --bg-0: #11111b; --bg-1: #181825; --bg-2: #1e1e2e; --bg-3: #313244; --bg-4: #45475a;
+  --text: #cdd6f4; --muted: #9399b2; --accent: #cba6f7; --accent-2: #94e2d5;
+  --danger: #f38ba8; --ok: #a6e3a1; --border: #26263a; --mention: rgba(249,226,175,.10);
+  --deleted: rgba(243,139,168,.12); --shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+[data-theme="rose"] {
+  --bg-0: #13111e; --bg-1: #191724; --bg-2: #1f1d2e; --bg-3: #26233a; --bg-4: #312e48;
+  --text: #e0def4; --muted: #908caa; --accent: #ebbcba; --accent-2: #9ccfd8;
+  --danger: #eb6f92; --ok: #9ccfd8; --border: #26233a; --mention: rgba(246,193,119,.10);
+  --deleted: rgba(235,111,146,.12); --shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+[data-theme="tokyo"] {
+  --bg-0: #13141c; --bg-1: #16161e; --bg-2: #1a1b26; --bg-3: #24283b; --bg-4: #2f3549;
+  --text: #c0caf5; --muted: #7f87ad; --accent: #7aa2f7; --accent-2: #9ece6a;
+  --danger: #f7768e; --ok: #9ece6a; --border: #232433; --mention: rgba(224,175,104,.10);
+  --deleted: rgba(247,118,142,.12); --shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+[data-theme="neon"] {
+  --bg-0: #07020f; --bg-1: #0d0620; --bg-2: #120a2a; --bg-3: #1c1240; --bg-4: #2a1b5c;
+  --text: #f4eaff; --muted: #a58fd0; --accent: #ff2bd6; --accent-2: #00f0ff;
+  --danger: #ff3864; --ok: #39ff14; --border: #2a1b5c; --mention: rgba(0,240,255,.10);
+  --deleted: rgba(255,56,100,.14); --shadow: 0 0 30px rgba(255,43,214,.15);
+}
+[data-theme="sakura"] {
+  --bg-0: #f3dbe3; --bg-1: #fbe9ef; --bg-2: #fff6f9; --bg-3: #f6e1e8; --bg-4: #efcfda;
+  --text: #4a2c3a; --muted: #9a6f82; --accent: #e0618f; --accent-2: #5fb3a1;
+  --danger: #d6345b; --ok: #3f9e7f; --border: #f0d3dd; --mention: rgba(224,97,143,.12);
+  --deleted: rgba(214,52,91,.10); --shadow: 0 10px 30px rgba(160,60,100,.15);
+}
+[data-theme="acik"] {
+  --bg-0: #e3e5e8; --bg-1: #f2f3f5; --bg-2: #ffffff; --bg-3: #ebedef; --bg-4: #dfe1e5;
+  --text: #1f2328; --muted: #5c6370; --accent: #4f5bd5; --accent-2: #1a9e5a;
+  --danger: #d83c3e; --ok: #1a9e5a; --border: #e1e3e6; --mention: rgba(250,168,26,.15);
+  --deleted: rgba(216,60,62,.08); --shadow: 0 10px 30px rgba(0,0,0,.12);
+}
+
+/* Aurora: hareketli renk bulutlari + yari saydam paneller */
+[data-theme="aurora"] {
+  --bg-0: rgba(8, 8, 20, .72); --bg-1: rgba(16, 16, 36, .62); --bg-2: rgba(12, 12, 28, .5); --bg-3: rgba(255,255,255,.07); --bg-4: rgba(255,255,255,.13);
+  --text: #f1f0ff; --muted: #a7a3cc; --accent: #a78bfa; --accent-2: #5eead4;
+  --danger: #fb7185; --ok: #4ade80; --border: rgba(255,255,255,.08); --mention: rgba(167,139,250,.16);
+  --deleted: rgba(251,113,133,.14); --shadow: 0 10px 40px rgba(0,0,0,.5);
+}
+/* Cam: buzlu cam, acik renk vurgular */
+[data-theme="cam"] {
+  --bg-0: rgba(20, 28, 40, .55); --bg-1: rgba(30, 40, 56, .45); --bg-2: rgba(24, 32, 46, .35); --bg-3: rgba(255,255,255,.09); --bg-4: rgba(255,255,255,.16);
+  --text: #f4f8ff; --muted: #b3c0d6; --accent: #60a5fa; --accent-2: #34d399;
+  --danger: #f87171; --ok: #34d399; --border: rgba(255,255,255,.12); --mention: rgba(96,165,250,.16);
+  --deleted: rgba(248,113,113,.14); --shadow: 0 10px 40px rgba(0,0,0,.35);
+}

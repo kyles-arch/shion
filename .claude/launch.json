@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shion-ui-test",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tests/serve.mjs"],
+      "port": 5174
+    }
+  ]
+}
