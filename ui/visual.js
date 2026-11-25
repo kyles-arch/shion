@@ -12,6 +12,9 @@ THEMES.push(["ozel", "Özel 🎨"]);
 /* ================================================================== */
 /* Özel tema paleti                                                    */
 /* ================================================================== */
+/* Performans seviyesi: "sade" | "dengeli" | "solen" (rich.js otomatik geçersiz kılma yapabilir) */
+function effPerf() { return window.__perfOverride || cfg.perf || "solen"; }
+function lowMotion() { return !!cfg.noAnim || effPerf() === "sade"; }
 function hexToHsl(hex) {
   let [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
@@ -42,9 +45,10 @@ function applyVisual() {
   for (const v of VIS_VARS) st.removeProperty(v);
   if (!cfg.accent) st.removeProperty("--accent");
   if (cfg.theme === "ozel") for (const [k, v] of Object.entries(customPalette(cfg.customTheme))) if (k !== "--accent" || !cfg.accent) st.setProperty(k, v);
-  const glassy = !!(cfg.glass || cfg.fx || wallpaperData()) && !["aurora", "cam"].includes(cfg.theme);
+  const glassy = !!(cfg.glass || cfg.fx || wallpaperData() || cfg.wallVideo) && !["aurora", "cam"].includes(cfg.theme);
   r.classList.toggle("glassy", glassy);
-  r.classList.toggle("glass-blur", glassy && cfg.glassBlur);
+  r.classList.toggle("glass-blur", glassy && cfg.glassBlur && effPerf() === "solen");
+  r.dataset.perf = effPerf();
   if (glassy) {
     const cs = getComputedStyle(r);
     st.setProperty("--solid-bg", cs.getPropertyValue("--bg-0").trim());
@@ -59,7 +63,7 @@ function applyVisual() {
   r.dataset.msgStyle = cfg.msgStyle || "klasik";
   if (cfg.font) { r.dataset.font = "1"; st.setProperty("--ufont", `"${cfg.font}", "Segoe UI", system-ui, sans-serif`); } else { delete r.dataset.font; st.removeProperty("--ufont"); }
   applyWallpaper();
-  startFx(cfg.noAnim ? "" : cfg.fx);
+  startFx(lowMotion() || (effPerf() === "dengeli" && !["css-synth", "css-akis"].includes(cfg.fx)) ? "" : cfg.fx);
   renderDecoCss();
 }
 {
@@ -548,7 +552,7 @@ const BURSTS = [
 ];
 let burst = null;
 function burstFx(kind) {
-  if (cfg.noAnim || !cfg.msgFx) return;
+  if (lowMotion() || !cfg.msgFx) return;
   if (!burst) {
     const cv = h("canvas"); cv.id = "burst-canvas"; document.body.append(cv);
     burst = { cv, ctx: cv.getContext("2d"), parts: [], raf: 0 };
@@ -557,6 +561,8 @@ function burstFx(kind) {
   const W = cv.width, H = cv.height, cols = ["#ff4d8d", "#ffd23f", "#3ddc97", "#4fc3ff", "#a78bfa", "#ff8a3d"];
   if (kind === "konfeti") for (let i = 0; i < 160; i++) burst.parts.push({ k: "c", x: rnd(0, W), y: rnd(-H * 0.3, -10), vx: rnd(-60, 60), vy: rnd(120, 320), a: rnd(0, 6.28), va: rnd(-8, 8), w: rnd(6, 11), c: cols[i % 6], l: 4 });
   if (kind === "kalp") for (let i = 0; i < 40; i++) burst.parts.push({ k: "h", x: rnd(0, W), y: H + rnd(0, 200), vx: rnd(-20, 20), vy: -rnd(120, 260), s: rnd(14, 30), p: rnd(0, 6.28), l: 4 });
+  if (kind === "kar") for (let i = 0; i < 120; i++) burst.parts.push({ k: "s", x: rnd(0, W), y: rnd(-H * 0.5, -10), vx: rnd(-20, 20), vy: rnd(60, 140), r: rnd(1.5, 4), l: 6 });
+  if (kind === "yildiz") for (let i = 0; i < 14; i++) burst.parts.push({ k: "y", x: rnd(W * 0.1, W * 0.9), y: rnd(-60, H * 0.3), vx: rnd(500, 800), vy: rnd(200, 320), l: 1.4, d: i * 0.18 });
   if (kind === "fisek") for (let j = 0; j < 4; j++) {
     const cx = rnd(W * 0.2, W * 0.8), cy = rnd(H * 0.15, H * 0.45), c = cols[(Math.random() * 6) | 0], d = j * 0.45;
     for (let i = 0; i < 70; i++) { const ang = (i / 70) * 6.28, sp = rnd(80, 260); burst.parts.push({ k: "f", x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, c, l: 1.8, d }); }
@@ -573,6 +579,8 @@ function burstFx(kind) {
       p.x += p.vx * dt; p.y += p.vy * dt; ctx.globalAlpha = Math.min(1, p.l);
       if (p.k === "c") { p.vy += 60 * dt; p.vx *= 0.99; p.a += p.va * dt; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.fillStyle = p.c; ctx.fillRect(-p.w / 2, -p.w / 4, p.w, p.w / 2); ctx.restore(); }
       else if (p.k === "h") { p.x += Math.sin(t / 400 + p.p) * 30 * dt; ctx.font = `${p.s}px "Segoe UI Emoji"`; ctx.fillText("❤️", p.x, p.y); }
+      else if (p.k === "s") { p.x += Math.sin(t / 600 + p.r) * 20 * dt; ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.28); ctx.fill(); }
+      else if (p.k === "y") { const g = ctx.createLinearGradient(p.x, p.y, p.x - p.vx * 0.1, p.y - p.vy * 0.1); g.addColorStop(0, "#fff"); g.addColorStop(1, "rgba(255,255,255,0)"); ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.1, p.y - p.vy * 0.1); ctx.stroke(); }
       else { p.vx *= 0.97; p.vy = p.vy * 0.97 + 50 * dt; ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, 2.2, 0, 6.28); ctx.fill(); }
     }
     ctx.globalAlpha = 1;
@@ -850,7 +858,7 @@ function playAnims(root, on) {
 const ANIM_HOST = ".msg, .m-row, .rail-btn, .vuser, .ch.dm, .me-av, .reply-line";
 let animHost = null;
 document.addEventListener("mouseover", (e) => {
-  if (cfg.noAnim) return;
+  if (lowMotion()) return;
   const host = e.target.closest?.(ANIM_HOST);
   if (host === animHost) return;
   if (animHost) playAnims(animHost, false);
@@ -875,7 +883,7 @@ async function addProfileEffect(pc, prof) {
   const k = (pc.offsetWidth || 300) / 450;
   for (const ef of conf.effects) {
     if (!/^https:\/\/cdn\.discordapp\.com\//.test(ef.src || "")) continue;
-    const img = h("img"); img.alt = ""; img.src = cfg.noAnim && conf.reducedMotionSrc ? conf.reducedMotionSrc : ef.src;
+    const img = h("img"); img.alt = ""; img.src = lowMotion() && conf.reducedMotionSrc ? conf.reducedMotionSrc : ef.src;
     Object.assign(img.style, { left: (ef.position?.x || 0) * k + "px", top: (ef.position?.y || 0) * k + "px", width: (ef.width || 450) * k + "px", zIndex: ef.zIndex || 1 });
     box.append(img);
   }
@@ -906,7 +914,7 @@ function styleName(el, u) { const css = el && nameStyleCss(u); if (css && !el.st
   };
 }
 function visualProfileMore(pc, u, prof) {
-  const av = pc.querySelector(".pc-av img"); if (av && ANIM_RE.test(av.src) && !cfg.noAnim) av.src = animSrc(av.src);
+  const av = pc.querySelector(".pc-av img"); if (av && ANIM_RE.test(av.src) && !lowMotion()) av.src = animSrc(av.src);
   const pu = { ...u, ...(prof?.user || {}) };
   addAvDeco(av, pu, true);
   pc.querySelector(".pc-user")?.insertAdjacentHTML("beforeend", clanHtml(pu));
@@ -921,7 +929,7 @@ document.addEventListener("keydown", (e) => { if (e.ctrlKey && e.shiftKey && e.k
 /* ================================================================== */
 /* Yenilikler penceresi (her sürümde bir kez)                          */
 /* ================================================================== */
-const SHION_VERSION = "0.3.0";
+const SHION_VERSION = "0.4.0";
 const WHATS_NEW = [
   ["🎨", "Görünüm stüdyosu", "Ctrl+Shift+T — hazır görünümler, özel tema, cam, parlama, avatar şekilleri", () => openStudio()],
   ["🌌", "Hareketli arka planlar", "Yıldız alanı, kar, sakura, ateş böcekleri, Matrix, aurora, neon ızgara…", () => openStudio()],

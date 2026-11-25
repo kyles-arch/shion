@@ -119,6 +119,7 @@
     send_sound: () => null, default_sounds: () => [{ sound_id: "1", name: "quack", emoji_name: "🦆", volume: 1 }, { sound_id: "2", name: "airhorn", emoji_name: "📯", volume: 1 }],
     guild_events: () => [{ id: "e1", name: "Turnuva gecesi", status: 1, scheduled_start_time: new Date(Date.now() + 86400000).toISOString(), description: "**Ödüllü**", user_count: 12, entity_metadata: { location: "Discord" } }],
     set_auto_idle: () => null,
+    save_text: (a) => "C:/Users/test/Downloads/Shion/" + a.name,
     profile_effects: () => ({ profile_effect_configs: [{ id: "1139323098643333937", title: "Kar", reducedMotionSrc: "https://cdn.discordapp.com/assets/profile_effects/static.png", effects: [{ src: "https://cdn.discordapp.com/assets/profile_effects/kar.png", width: 450, height: 880, position: { x: 0, y: 0 }, zIndex: 2 }, { src: "https://evil.example/x.png", width: 10 }] }] }), set_custom_rpc: () => null,
     fetch_message: ({ messageId }) => ({ id: messageId, channel_id: "x", author: users[2], content: "bağlantılı **mesaj**", timestamp: new Date().toISOString(), attachments: [], embeds: [] }),
     reaction_users: () => [users[0], users[1]],

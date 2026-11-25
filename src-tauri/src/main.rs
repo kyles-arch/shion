@@ -1392,6 +1392,20 @@ fn chrono_like_date() -> String {
     format!("{y:04}{m:02}{d:02}-{:02}{:02}", rem / 3600, rem % 3600 / 60)
 }
 
+/// Gorunum yedegi gibi metin dosyalarini Indirilenler/Shion'a yaz, klasorde goster.
+#[tauri::command]
+fn save_text(app: AppHandle, name: String, content: String) -> Result<String, String> {
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?.join("Shion");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join(extra::safe_name(&name));
+    std::fs::write(&file, content).map_err(|e| e.to_string())?;
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let _ = app.opener().reveal_item_in_dir(&file);
+    }
+    Ok(file.to_string_lossy().into_owned())
+}
+
 /// Avatar / banner / emoji / cikartma indir (sadece Discord CDN), klasorde goster.
 #[tauri::command]
 async fn save_media(app: AppHandle, core: State<'_, CoreRef>, url: String, name: String) -> Result<String, String> {
@@ -1564,6 +1578,7 @@ fn main() {
             send_sound,
             default_sounds,
             profile_effects,
+            save_text,
             guild_events,
             set_auto_idle,
             login,

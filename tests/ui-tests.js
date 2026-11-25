@@ -1162,6 +1162,131 @@ export async function run() {
     assert(q("#modal-body .st-looks"), "studyo acilmadi"); closeModal();
   });
 
+  await test("zengin 1: performans seviyeleri, kisayol, otomatik oyun modu", async () => {
+    setPerf("sade"); await sleep(20);
+    assert(document.documentElement.dataset.perf === "sade" && lowMotion() && !fxState, "sade uygulanmadi");
+    assert(q("#me-panel .perf-btn")?.textContent === "🍃", "panel dugmesi: " + q("#me-panel .perf-btn")?.textContent);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "P", ctrlKey: true, shiftKey: true, bubbles: true }));
+    assert(cfg.perf === "dengeli" && effPerf() === "dengeli", "kisayol: " + cfg.perf);
+    setPerf("solen"); S.game = "Test Oyunu"; recomputePerf();
+    assert(effPerf() === "sade" && cfg.perf === "solen", "oyunda sade olmadi");
+    S.game = null; recomputePerf(); await sleep(60);
+    assert(effPerf() === "solen" && document.documentElement.dataset.perf === "solen", "oyundan sonra geri donmedi");
+  });
+
+  await test("zengin 2: yazi efekti ve ekran efekti kodlari", async () => {
+    nextTfx = "w";
+    const out = outgoingTransform("merhaba");
+    assert(out.startsWith("merhaba") && readTags(out).includes("SXw"), "SX kodu yok");
+    nextTfx = "";
+    const fx = outgoingTransform("/konfeti selam");
+    assert(fx.startsWith("selam") && readTags(fx).includes("SEc"), "SE kodu: " + JSON.stringify(readTags(fx)));
+    assert(readTags(outgoingTransform("/kar")).includes("SEk") && outgoingTransform("/kar").startsWith("❄️"), "bos /kar");
+    assert((await runSlash("/kalp")) === false, "runSlash efekt komutunu yuttu");
+    const el = renderMsg({ id: "tf1", channel_id: S.channel.id, author: { id: "9", username: "x" }, content: out, timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }, null);
+    const c = el.querySelector(".content");
+    assert(c.classList.contains("tfx-w") && c.querySelectorAll(".tc").length === 7 && !/[\u{E0000}-\u{E007F}]/u.test(c.textContent), "dalga efekti: " + c.className + " " + c.querySelectorAll(".tc").length);
+    q("#tfx-btn") || tfxButton();
+    assert(q("#tfx-btn"), "✨ dugmesi yok");
+  });
+
+  await test("zengin 3: gun ayiricilari, iskelet, galeri", async () => {
+    renderMessages(false);
+    assert(document.querySelectorAll("#messages .day-pill").length >= 1, "gun ayirici yok");
+    assert(skeleton().querySelectorAll(".sk-msg").length === 7, "iskelet");
+    const old = galleryUrls; galleryUrls = () => ["https://cdn.discordapp.com/a.png", "https://cdn.discordapp.com/b.png"];
+    try {
+      lightbox("https://cdn.discordapp.com/a.png");
+      const lb = document.querySelector(".lightbox:last-of-type");
+      assert(lb.querySelectorAll(".lb-nav").length === 2 && lb.querySelector(".lb-count").textContent === "1 / 2", "galeri dugmeleri");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+      assert(lb.querySelector("img").src.endsWith("b.png") && lb.querySelector(".lb-count").textContent === "2 / 2", "ok tusu");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      assert(!lb.isConnected, "esc kapatmadi");
+    } finally { galleryUrls = old; }
+    const em = renderEmbed({ type: "rich", title: "Video", provider: { name: "YouTube" } });
+    assert(em.style.getPropertyValue("--ec") === "#ff0033" && em.dataset.provider === "YouTube", "embed rengi");
+  });
+
+  await test("zengin 4: tema kodu, galeri, yedek", async () => {
+    const keep = { theme: cfg.theme, fx: cfg.fx, accent: cfg.accent };
+    cfg.theme = "matrix"; cfg.fx = "kar"; const code = exportThemeCode();
+    assert(code.startsWith("SHION-TEMA:"), "kod onegi");
+    cfg.theme = "gece"; cfg.fx = "";
+    const n = importThemeCode(code);
+    assert(n > 5 && cfg.theme === "matrix" && cfg.fx === "kar", "kod geri yuklenmedi");
+    const bad = "SHION-TEMA:" + btoa(JSON.stringify({ theme: "<img src=x onerror=alert(1)>", fx: "yok-boyle", token: "x", accent: "red;}" }));
+    let threw = false; try { importThemeCode(bad); } catch { threw = true; }
+    assert(threw && cfg.theme === "matrix" && cfg.token === undefined, "zararli kod kabul edildi");
+    let t2 = false; try { importThemeCode("selam"); } catch { t2 = true; } assert(t2, "gecersiz kod");
+    Object.assign(cfg, keep); saveCfg(); applyCfg();
+    openGallery(); assert(document.querySelectorAll("#modal-body .g-card").length === 12, "galeri 12 degil"); closeModal();
+    await exportVisualBackup();
+    const call = called("save_text").pop();
+    assert(call && JSON.parse(call[1].content).shion === "gorunum-yedegi", "yedek kaydedilmedi");
+  });
+
+  await test("zengin 5: sunucu temasi ve mevsim modu ayarlari degistirmez", async () => {
+    const g = S.guilds[0], keepView = S.view, keepTheme = cfg.theme;
+    cfg.guildThemes = { [g.id]: { theme: "nord" } };
+    S.view = g.id; applyCfg();
+    assert(document.documentElement.dataset.theme === "nord" && cfg.theme === keepTheme, "sunucu temasi: " + document.documentElement.dataset.theme);
+    S.view = "home"; applyCfg();
+    assert(document.documentElement.dataset.theme === keepTheme, "geri donmedi");
+    cfg.guildThemes = {}; S.view = keepView; applyCfg();
+    assert(seasonFx(new Date(2026, 11, 20)) === "kar" && seasonFx(new Date(2026, 9, 28)) === "cadilar" && seasonFx(new Date(2026, 3, 10)) === "sakura" && seasonFx(new Date(2026, 6, 10)) === "", "mevsimler");
+    assert(vencordGuildItems(g).some((x) => x.label.includes("Sunucu teması")), "sunucu menusu");
+  });
+
+  await test("zengin 6: studyo sekmeleri ve arama", async () => {
+    openStudio(); await sleep(20);
+    const root = q("#modal-body .studio");
+    assert(root.querySelectorAll(".st-tabs button").length === 8, "sekme sayisi");
+    root.querySelector('.st-tabs button[data-k="perf"]').click();
+    const vis = [...root.querySelectorAll(".st-sec")].filter((s) => s.offsetParent !== null);
+    assert(vis.length >= 1 && vis.every((s) => s.dataset.tab === "perf"), "perf sekmesi: " + vis.map((s) => s.dataset.tab));
+    assert(root.querySelector(".perf-card.sel"), "seviye kartlari");
+    const s = root.querySelector(".st-search"); s.value = "wrapped"; s.dispatchEvent(new Event("input"));
+    const vis2 = [...root.querySelectorAll(".st-sec")].filter((x) => x.offsetParent !== null);
+    assert(vis2.length === 1 && vis2[0].textContent.includes("Wrapped"), "arama: " + vis2.length);
+    root.querySelector('.st-tabs button[data-k="tema"]').click();
+    assert(root.querySelector(".fx-btn[data-cost]"), "maliyet etiketi yok");
+    closeModal();
+  });
+
+  await test("zengin 7: istatistik, basarim, Wrapped", async () => {
+    const before = stats.msgs;
+    recordOwnMessage({ id: "w1", channel_id: S.channel.id, author: S.me, content: "selam 😂 <:kedi:123>", timestamp: new Date().toISOString() });
+    assert(stats.msgs === before + 1 && stats.emojis["😂"] >= 1 && stats.emojis[":kedi:"] >= 1 && stats.hours.reduce((a, b) => a + b) >= 1, "istatistik");
+    assert(stats.ach.ilk, "ilk mesaj basarimi yok");
+    openWrapped(); await sleep(20);
+    assert(q("#modal-body .wr-slide h2")?.textContent === "Shion Wrapped", "wrapped acilmadi");
+    for (let i = 0; i < 4; i++) q("#modal-body .wr-nav .primary").click();
+    assert(q("#modal-body .wr-heat")?.children.length === 168, "isi haritasi");
+    assert(stats.ach.wrapped, "wrapped basarimi");
+    closeModal(); openAchievements();
+    assert(document.querySelectorAll("#modal-body .ach").length === 16 && document.querySelectorAll("#modal-body .ach.got").length >= 2, "basarim listesi");
+    closeModal();
+  });
+
+  await test("zengin 8: Spotify ve oyun karti, kisi rengi, sahne", async () => {
+    const f = { id: "888", type: 1, username: "spot", user: { id: "888", username: "spot" } }; S.friends.push(f);
+    f.presence = { status: "online", activities: [{ type: 2, name: "Spotify", details: "Şarkı", state: "Sanatçı", assets: { large_image: "spotify:ab67616d0000b273abc" }, timestamps: { start: Date.now() - 60000, end: Date.now() + 120000 } }, { type: 0, name: "Oyun", application_id: "111", assets: { large_image: "222" }, timestamps: { start: Date.now() - 3600000 } }] };
+    const pop = h("div", "popout", profileCardHtml(f, null)); document.body.append(pop);
+    visualProfile(pop, f, { user: f });
+    await sleep(30);
+    const sp = pop.querySelector(".act-card.spotify img"), gm = pop.querySelector(".act-card.game");
+    assert(sp && sp.src === "https://i.scdn.co/image/ab67616d0000b273abc", "spotify: " + sp?.src);
+    assert(gm && gm.querySelector("img").src.includes("/app-assets/111/222.png") && /1:00:0\d geçti/.test(gm.textContent), "oyun karti: " + gm?.textContent);
+    assert(pop.querySelector(".act-bar i").style.width !== "", "ilerleme cubugu");
+    pop.remove(); S.friends.splice(S.friends.indexOf(f), 1);
+    cfg.userColors = { "777": "#ff0000", "x\"]{": "#00ff00" }; renderUserColors();
+    const css = q("#user-colors").textContent;
+    assert(css.includes('data-uid="777"') && !css.includes("x\\\""), "kisi rengi css: " + css);
+    cfg.userColors = {}; renderUserColors();
+    openStage(); assert(q("#modal-body .stage"), "sahne acilmadi"); closeModal();
+  });
+
   await test("yatay tasma yok", async () => {
     assert(document.documentElement.scrollWidth <= innerWidth + 1, "scrollWidth " + document.documentElement.scrollWidth);
   });
