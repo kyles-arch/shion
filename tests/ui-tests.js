@@ -625,7 +625,7 @@ export async function run() {
 
   await test("emoji secici tum sunuculari gosterir", async () => {
     $("#emoji-btn").click(); await sleep(30);
-    const heads = [...document.querySelectorAll(".emoji-pop h5")].map((x) => x.textContent);
+    const heads = [...document.querySelectorAll(".emoji-pop h5")].map((x) => x.textContent).filter((x) => !x.startsWith("⭐"));
     assert(heads.length >= 3 && heads[1].includes("✨"), "gruplar: " + heads.join("|"));
     closeEmojiPop();
   });
@@ -786,6 +786,380 @@ export async function run() {
     bar.querySelector(".btn.primary").click(); await sleep(50);
     assert(called("install_update").length === 1, "kurulum cagrilmadi");
     bar.remove(); window.__mockUpdate = null;
+  });
+
+  await test("discord: adsiz gizli kanallar gruplanir / gizlenir", async () => {
+    closeModal();
+    const g = S.guilds[1];
+    const cat = g.channels.find((c) => c.type === 4);
+    const red = [0, 1, 2, 3].map((i) => ({ id: "red" + i, name: "gizli-kanal", type: 0, parent_id: cat.id, position: 50 + i, hidden: true, redacted: true, can_send: false }));
+    g.channels.push(...red, { id: "red-named", name: "yonetim", type: 0, parent_id: cat.id, position: 60, hidden: true, redacted: true });
+    cfg.showHidden = true; cfg.groupRedacted = true; cfg.hideRedacted = false;
+    S.view = g.id; renderSidebar();
+    const grp = [...document.querySelectorAll(".redacted-group")];
+    assert(grp.length === 1 && grp[0].textContent.includes("4 gizli kanal"), "grup yok: " + grp.map((x) => x.textContent));
+    assert(!q('#channel-list .ch[data-id="red0"]'), "gruptaki kanal gorunuyor");
+    assert(q('#channel-list .ch[data-id="red-named"]'), "adi kayitli kanal gizlendi");
+    grp[0].click(); await sleep(20);
+    assert(q('#channel-list .ch[data-id="red2"]'), "grup acilmadi");
+    cfg.hideRedacted = true; renderSidebar();
+    assert(!q('#channel-list .ch[data-id="red0"]') && !q(".redacted-group"), "gizleme calismiyor");
+    assert(q('#channel-list .ch[data-id="red-named"]'), "kayitli adli kanal da gizlendi");
+    cfg.hideRedacted = false; g.channels = g.channels.filter((c) => !String(c.id).startsWith("red")); renderSidebar();
+  });
+
+  await test("discord: teshis ekrani", async () => {
+    await openDiagnostics(); await sleep(20);
+    const t = q("#modal-body").textContent;
+    assert(t.includes("Her şey yolunda") && t.includes("4 kanalın adı"), "teshis: " + t.slice(0, 200));
+    closeModal();
+  });
+
+  await test("discord: bahsetmeler kutusu ve atlama", async () => {
+    await openInbox(); await sleep(40);
+    const it = q("#modal-body .res-item");
+    assert(it && it.textContent.includes("bakar mısın"), "bahsetme yok");
+    assert(it.textContent.includes("Valorant"), "konum yok: " + it.textContent);
+    it.click(); await sleep(120);
+    assert(S.channel?.id === S.guilds[0].channels[1].id, "kanala gidilmedi");
+  });
+
+  await test("discord: mesaj iletme", async () => {
+    const m = S.msgs[S.msgs.length - 1];
+    openForward(m); await sleep(20);
+    const inp = q("#modal-body .fwd input.inp"); inp.value = "kanka"; inp.oninput(); await sleep(10);
+    const box = q("#modal-body .fwd-item input"); assert(box, "hedef yok");
+    box.checked = true; box.onchange({ target: box });
+    q("#modal-body .btn.ok").click(); await sleep(40);
+    const c = called("forward_message").pop();
+    assert(c && c[1].messageId === m.id && c[1].target, "iletilmedi");
+  });
+
+  await test("discord: iletilmis mesaj gorunur", async () => {
+    const fm = { id: "fw1", channel_id: S.channel.id, author: { id: "201", username: "x" }, content: "", timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [],
+      message_reference: { type: 1, channel_id: S.guilds[2].channels[1].id, message_id: "1300000000000000001" }, message_snapshots: [{ message: { content: "**önemli** duyuru", attachments: [], embeds: [] } }] };
+    const el = renderMsg(fm, null);
+    assert(el.querySelector(".fwd-box b")?.textContent === "önemli", "anlik goruntu yok");
+    assert(el.querySelector(".fwd-src").textContent.includes("Rust"), "kaynak yok");
+  });
+
+  await test("discord: okunmadi isaretle", async () => {
+    const m = S.msgs[S.msgs.length - 3], cid = S.channel.id;
+    await markUnreadFrom(m);
+    const c = called("mark_unread").pop();
+    assert(c[1].beforeId === S.msgs[S.msgs.length - 4].id, "onceki mesaj kimligi yanlis");
+    assert(S.unread.has(cid), "okunmamis degil");
+  });
+
+  await test("discord: yanit bildirimi kapatilabilir", async () => {
+    await openChannel({ ...S.guilds[0].channels[1], guild_id: S.guilds[0].id }); await sleep(60);
+    setReply(S.msgs[0]);
+    const b = q("#reply-bar .ping-toggle"); assert(b && b.textContent.includes("AÇIK"), "dugme yok");
+    b.click(); assert(b.textContent.includes("KAPALI"), "degismedi");
+    q("#input").value = "tamam"; await send(); await sleep(20);
+    const c = called("send_message").pop();
+    assert(c[1].replyPing === false && c[1].replyTo, "replyPing gitmedi");
+    cfg.replyPing = true; saveCfg();
+  });
+
+  await test("discord: markdown alt yazi ve listeler", async () => {
+    const out = md("-# kucuk not\n- bir\n- iki\n1. ilk\n## Baslik");
+    assert(out.includes('<small class="subtext">kucuk not</small>'), "alt yazi: " + out);
+    assert(/<ul><li>bir<\/li><li>iki<\/li><\/ul>/.test(out), "liste: " + out);
+    assert(out.includes("<ol>") && out.includes("<h3 class=\"mdh\">Baslik</h3>"), "ol/baslik: " + out);
+  });
+
+  await test("discord: etkinlikler + profil notu", async () => {
+    S.guilds[0].events = 1;
+    assert(discordGuildItems(S.guilds[0])[0].label.includes("Etkinlikler (1)"), "menu ogesi yok");
+    await openEvents(S.guilds[0]); await sleep(20);
+    assert(q("#modal-body").textContent.includes("Turnuva gecesi") && q("#modal-body b").textContent, "etkinlik yok");
+    closeModal();
+    const pop = h("div", "", '<div class="pc-body"></div>');
+    await discordProfile(pop, { id: "205", username: "b" }, { mutual_friends: [{ id: "201", username: "a", global_name: "Ayşe" }] });
+    assert(pop.textContent.includes("Ortak arkadaşlar · 1"), "ortak arkadas yok");
+    const ta = pop.querySelector(".pc-note"); ta.value = "okul arkadaşı"; ta.onblur(); await sleep(20);
+    assert(called("set_note").pop()[1].note === "okul arkadaşı", "not kaydedilmedi");
+  });
+
+  await test("discord: ses tahtasi + gelen ses efekti", async () => {
+    S.vc.state = "connected"; S.vc.channel_id = "vc1"; S.vc.guild_id = S.guilds[0].id;
+    const p = h("div"); soundboardButton(p);
+    const b = p.querySelector(".sb-btn"); assert(b, "dugme yok");
+    document.body.append(p);
+    await openSoundboard(b); await sleep(20);
+    const items = document.querySelectorAll(".sb-pop .sb-item"); assert(items.length === 2, "ses sayisi " + items.length);
+    items[1].click(); await sleep(20);
+    assert(called("send_sound").pop()[1].soundId === "2", "ses gonderilmedi");
+    let played = null; const A = window.Audio; window.Audio = function (u) { played = u; return { play: () => Promise.resolve(), volume: 1 }; };
+    window.__mock.emit("voice-effect", { channel_id: "vc1", user_id: "201", sound_id: "77", sound_volume: 0.5 }); await sleep(20);
+    window.Audio = A;
+    assert(played && played.endsWith("/soundboard-sounds/77"), "efekt calinmadi: " + played);
+    document.querySelector(".sb-pop")?.remove(); p.remove();
+    S.vc.state = "disconnected"; S.vc.channel_id = null;
+  });
+
+  await test("discord: hizli acilis onbellegi", async () => {
+    const saved = { guilds: S.guilds, dms: S.dms };
+    window.__mockCache = { guilds: [{ ...S.guilds[0], name: "ONBELLEK" }], dms: [], folders: null, read_states: {}, friends: [], muted_guilds: [], muted_channels: [], messages: { x1: [{ id: "1", channel_id: "x1", content: "eski", author: { id: "1" }, timestamp: new Date().toISOString(), type: 0 }] } };
+    S.guilds = []; S.dms = [];
+    await applyCache();
+    assert(S.guilds.length === 1 && S.guilds[0].name === "ONBELLEK", "onbellek uygulanmadi");
+    assert(cachedMsgs("x1")?.[0].content === "eski", "mesaj onbellegi yok");
+    S.guilds = saved.guilds; S.dms = saved.dms; window.__mockCache = null; CACHE = null; renderRail(); renderSidebar();
+    saveCache(); assert(called("save_cache").length, "kaydetmedi");
+  });
+
+  await test("discord: kisayollar Alt+asagi kanal degistirir", async () => {
+    S.view = S.guilds[2].id; await openChannel({ ...S.guilds[2].channels[1], guild_id: S.guilds[2].id }); await sleep(60);
+    const from = S.channel.id;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true })); await sleep(80);
+    assert(S.channel.id !== from, "kanal degismedi");
+  });
+
+  await test("vencord: kod renklendirme ve zaman damgasi", async () => {
+    const out = md("```js\nconst x = \"a<b\"; // yorum\nfoo(42)\n```");
+    assert(out.includes('<span class="hl-k">const</span>') && out.includes('<span class="hl-c">// yorum</span>') && out.includes('<span class="hl-n">42</span>') && out.includes('<span class="hl-f">foo</span>'), "renk: " + out);
+    assert(out.includes("&lt;b") && !out.includes("a<b"), "kacis yok");
+    const t = Math.floor(Date.now() / 1000) - 7200;
+    assert(md(`<t:${t}:R>`).includes("önce"), "goreli zaman: " + md(`<t:${t}:R>`));
+  });
+
+  await test("vencord: giden metin donusumleri", async () => {
+    cfg.tags = { ip: "play.sunucum.com" }; cfg.textReplace = [{ find: "slm", replace: "selam" }, { find: "\\bnbr\\b", replace: "naber", regex: true }]; cfg.clearUrls = true;
+    const o = outgoingTransform("slm nbr ;;ip https://youtu.be/abc?si=XYZ&t=10 {saat 23:59}");
+    assert(o.startsWith("selam naber play.sunucum.com"), "sablon/degistirme: " + o);
+    assert(o.includes("https://youtu.be/abc?t=10") && !o.includes("si="), "url temizlenmedi: " + o);
+    assert(/<t:\d+:t>/.test(o), "zaman damgasi yok: " + o);
+    cfg.anonFiles = true;
+    const f = outgoingFiles([{ name: "gizli_ahmet.png", data: "" }, { name: "SPOILER_x.jpg", data: "" }]);
+    assert(/^[a-z0-9]{6}\.png$/.test(f[0].name) && f[1].name.startsWith("SPOILER_"), "dosya adi: " + f.map((x) => x.name));
+    cfg.anonFiles = false; cfg.tags = {}; cfg.textReplace = [];
+  });
+
+  await test("vencord: kullanici adi, engellenen, baglanti onizleme", async () => {
+    S.friends.push({ id: "207", type: 2, user: { id: "207", username: "kisi7" } });
+    const el = renderMsg({ id: "v1", channel_id: S.channel.id, author: { id: "207", username: "kisi7", global_name: "Kaan" }, content: "bak https://discord.com/channels/1/2/3", timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }, null);
+    assert(el.querySelector(".uname")?.textContent === "@kisi7", "kullanici adi yok");
+    assert(el.classList.contains("blocked-msg"), "engellenen gizlenmedi");
+    await sleep(30);
+    assert(el.querySelector(".link-embed b")?.textContent === "Deniz" && el.querySelector(".le-body b"), "onizleme: " + el.querySelector(".link-embed")?.innerHTML);
+    S.friends.pop();
+  });
+
+  await test("vencord: tepki verenler + ham mesaj", async () => {
+    const m = { id: "v2", channel_id: S.channel.id, reactions: [{ emoji: { id: null, name: "🔥" }, count: 3, me: false }] };
+    await showReactors({ clientX: 100, clientY: 100 }, m, m.reactions[0]); await sleep(20);
+    const pop = q(".reactors");
+    assert(pop && pop.querySelectorAll(".rx-user").length === 2 && pop.textContent.includes("+1"), "liste: " + pop?.textContent);
+    pop.remove();
+    viewRaw({ id: "v3", content: "merhaba", _deleted: false, author: { id: "1" } });
+    assert(q("#modal-body .raw-json").textContent.includes('"content": "merhaba"') && !q("#modal-body .raw-json").textContent.includes("_deleted"), "ham");
+    closeModal();
+  });
+
+  await test("vencord: sunucu bilgisi, sabit DM, emoji kopyalama", async () => {
+    const g = S.guilds[0]; g.meta = { member_count: 12345, boosts: 7, premium_tier: 2, features: ["COMMUNITY"], verification_level: 2 };
+    openServerInfo(g);
+    const t = q("#modal-body").textContent;
+    assert(t.includes("12.345") && t.includes("7 takviye") && t.includes("Topluluk"), "bilgi: " + t.slice(0, 200));
+    closeModal();
+    const d = S.dms[S.dms.length - 1];
+    vencordChannelItems({ id: d.id }, null)[0].fn();
+    S.view = "home"; renderSidebar();
+    assert(q("#channel-list .ch.dm[data-id]")?.dataset.id === d.id && q("#channel-list .ch.dm[data-id]").classList.contains("pinned"), "sabit DM ustte degil");
+    vencordChannelItems({ id: d.id }, null)[0].fn();
+    g.owner = true;
+    const img = h("img"); img.src = "https://cdn.discordapp.com/emojis/555.webp?size=48"; img.alt = ":kedi:";
+    const items = emojiCloneItems(img); assert(items.length === 1, "kopyalama ogesi yok");
+    items[0].fn(); await sleep(10);
+    q("#modal-body .fwd-item").click(); await sleep(20);
+    const c = called("clone_emoji").pop();
+    assert(c && c[1].name === "kedi" && c[1].url.includes("/emojis/555."), "kopyalanmadi: " + JSON.stringify(c?.[1]));
+    g.owner = false;
+  });
+
+  await test("vencord: profil cihaz/ses, arama suresi, yazıyor, ozel etkinlik", async () => {
+    S.friends.push({ id: "203", type: 1, user: { id: "203" }, presence: { status: "online", client_status: { mobile: "online" } } });
+    S.vstates.set("203", { user_id: "203", guild_id: S.guilds[0].id, channel_id: S.guilds[0].channels.find((c) => c.type === 2).id, user: { id: "203" } });
+    const pop = h("div", "", '<div class="pc-body"></div>');
+    vencordProfile(pop, { id: "203" }, { guild_member: { communication_disabled_until: new Date(Date.now() + 3600e3).toISOString() } });
+    const t = pop.textContent;
+    assert(t.includes("Mobil") && t.includes("ranked-lobi") && t.includes("Zaman aşımı"), "profil: " + t);
+    S.friends.pop(); S.vstates.delete("203");
+    S.vc.state = "connected"; vcSince = Date.now() - 65000;
+    const p = h("div", "", '<div class="info"><b></b><small>x</small></div>'); document.body.append(p);
+    vcPanelExtras(p);
+    assert(p.querySelector(".vc-timer").textContent.includes("01:05"), "sure: " + p.querySelector(".vc-timer").textContent);
+    p.remove(); S.vc.state = "disconnected"; vcSince = 0;
+    S.view = S.guilds[2].id; renderSidebar();
+    const cid = S.guilds[2].channels[1].id;
+    window.__mock.emit("typing-any", { channel_id: cid, user_id: "201" }); await sleep(20);
+    assert(q(`#channel-list .ch[data-id="${cid}"]`).classList.contains("typing"), "yaziyor gosterilmedi");
+    cfg.customRpc = { on: true, type: 2, name: "Lo-fi" }; pushRpc(); await sleep(10);
+    assert(called("set_custom_rpc").pop()[1].activity.name === "Lo-fi", "etkinlik gitmedi");
+    cfg.customRpc = null;
+  });
+
+  await test("vencord: sik kullanilan emoji + favori GIF", async () => {
+    cfg.emojiUse = {};
+    noteEmoji({ id: null, name: "🔥" }); noteEmoji({ id: null, name: "🔥" }); noteEmoji({ id: null, name: "😂" });
+    const grid = h("div"); frequentEmojiRow(grid, () => {});
+    const bs = grid.querySelectorAll("button");
+    assert(bs.length === 2 && bs[0].textContent === "🔥", "sik kullanilan: " + grid.textContent);
+    cfg.favGifs = []; toggleFavGif({ url: "u1", src: "s1" });
+    assert(favGifList()[0].url === "u1", "favori yok");
+    toggleFavGif({ url: "u1" }); assert(!cfg.favGifs.length, "favori kaldirilmadi");
+  });
+
+  await test("vencord: iliski bildirimi ve kendi ayrilisim", async () => {
+    window.__mock.emit("rel-removed", { id: "205", type: 1, user: { id: "205", username: "kisi5", global_name: "Bora" } }); await sleep(20);
+    assert(q("#toast").textContent.includes("Bora"), "bildirim yok: " + q("#toast").textContent);
+    leavingGuild = "g-x"; window.__mock.emit("guild-removed", { id: "g-x", name: "Eski" }); await sleep(20);
+    assert(!VC_LOG_REL[0].text.includes("Eski"), "kendi ayrilisim bildirildi");
+    window.__mock.emit("guild-removed", { id: "g-y", name: "Atildim" }); await sleep(20);
+    assert(VC_LOG_REL[0].text.includes("Atildim"), "atilma kaydedilmedi");
+  });
+
+  await test("gorsel: susleme kodu biyografide gorunmez ve geri okunur", async () => {
+    const d = { frame: "gokkusagi", name: "glitch", card: "galaksi", c1: "#ff00aa", c2: "#00e5ff" };
+    const code = encodeDeco(d);
+    assert([...code].length === 17 && !/[\x20-\x7e]/.test(code), "kod gorunur ya da uzun: " + [...code].length);
+    assert(JSON.stringify(decodeDeco("Merhaba" + code)) === JSON.stringify(d), "cozulemedi: " + JSON.stringify(decodeDeco("Merhaba" + code)));
+    assert(stripDeco("Selam" + code) === "Selam" && decodeDeco("normal biyografi") === null, "temizleme");
+    const pop = h("div", "", profileCardHtml({ id: "301", username: "x" }, null));
+    visualProfile(pop, { id: "301" }, { user_profile: { bio: "hey" + code } });
+    assert(pop.querySelector(".pc").classList.contains("card-galaksi") && DECOS.get("301")?.frame === "gokkusagi", "kart sinifi yok");
+    assert(q("#deco-css").textContent.includes('img.av[data-pop="301"]') && q("#deco-css").textContent.includes("v-glitch"), "css uretilmedi");
+    visualProfile(pop, { id: "301" }, { user_profile: { bio: "kod yok" } });
+    assert(!DECOS.has("301") && !q("#deco-css").textContent.includes('"301"'), "kod kalkinca silinmedi");
+  });
+
+  await test("gorsel: tema studyosu, efekt, cam, sekil, ozel tema", async () => {
+    const before = JSON.stringify({ theme: cfg.theme, fx: cfg.fx, shape: cfg.shape, glass: cfg.glass, glow: cfg.glow });
+    openStudio();
+    const looks = [...document.querySelectorAll("#modal-body .st-look")];
+    assert(looks.length >= 6, "hazir gorunum yok");
+    looks.find((b) => b.textContent.includes("Synthwave")).click(); await sleep(20);
+    const r = document.documentElement;
+    assert(r.dataset.theme === "ozel" && r.classList.contains("fx-css-synth") && r.classList.contains("glassy") && r.dataset.shape === "elmas" && r.classList.contains("glow"), "synthwave uygulanmadi: " + r.className);
+    assert(getComputedStyle(r).getPropertyValue("--accent").trim().toLowerCase() === "#ff2bd6", "ozel vurgu yok");
+    assert(getComputedStyle(r).getPropertyValue("--bg-1").includes("color-mix") || r.style.getPropertyValue("--bg-1").includes("color-mix"), "cam saydamligi yok");
+    looks.find((b) => b.textContent.includes("Galaksi")).click(); await sleep(60);
+    assert(q("#fx-canvas") && !r.classList.contains("fx-css-synth") && r.dataset.theme === "gece", "kanvas efekti baslamadi");
+    for (const k of ["kar", "sakura", "atesbocegi", "ag", "kabarcik", "matrix"]) { cfg.fx = k; applyCfg(); await sleep(80); assert(q("#fx-canvas"), k + " kanvas yok"); }
+    [...document.querySelectorAll("#modal-body .st-shape")].find((b) => b.textContent.includes("Kalp")).click();
+    assert(r.dataset.shape === "kalp" && getComputedStyle(q(".rail-btn img") || q(".me-av img")).maskImage !== "none", "kalp maskesi yok");
+    [...document.querySelectorAll("#modal-body .pe-actions .btn")].find((b) => b.textContent === "Geri al").click(); await sleep(20);
+    assert(JSON.stringify({ theme: cfg.theme, fx: cfg.fx, shape: cfg.shape, glass: cfg.glass, glow: cfg.glow }) === before, "geri alinmadi");
+    assert(!q("#fx-canvas") && !r.classList.contains("glassy"), "efekt kapanmadi");
+  });
+
+  await test("gorsel: susleme duzenleyici ve biyografiye paylasim", async () => {
+    openDecoEditor();
+    const grp = [...document.querySelectorAll("#modal-body .deco-group")];
+    grp[0].querySelectorAll(".fx-btn")[1].click(); grp[1].querySelectorAll(".fx-btn")[2].click(); grp[2].querySelectorAll(".fx-btn")[1].click();
+    assert(q("#modal-body .deco-prev .pc").classList.contains("card-yildizli"), "onizleme karti");
+    q("#modal-body .deco-share input").click();
+    q("#modal-body .pe-actions .btn.primary").click(); await sleep(60);
+    assert(cfg.deco.frame === "neon" && cfg.deco.name === "gokkusagi" && cfg.decoShare, "kaydedilmedi");
+    const c = called("update_profile").pop();
+    assert(c && decodeDeco(c[1].profile.bio)?.frame === "neon" && c[1].profile.bio.startsWith("Merhaba!"), "biyografi kodu: " + JSON.stringify(c?.[1]));
+    assert(q("#deco-css").textContent.includes(`.me-av img[data-uid="${S.me.id}"]`), "kendi susleme css'i yok");
+    cfg.deco = { frame: "", name: "", card: "", c1: "#a78bfa", c2: "#22d3ee" }; cfg.decoShare = false; renderDecoCss();
+  });
+
+  await test("gorsel 2: duvar kagidi, mesaj stili, yazi tipi, efektler", async () => {
+    const c = h("canvas"); c.width = 40; c.height = 20; c.getContext("2d").fillRect(0, 0, 40, 20);
+    setWallpaper(c.toDataURL("image/jpeg"));
+    assert(q("#wallpaper")?.style.backgroundImage.includes("data:image/jpeg") && document.documentElement.classList.contains("glassy"), "duvar kagidi yok");
+    cfg.wallBlur = 6; applyWallpaper(); assert(q("#wallpaper").style.filter === "blur(6px)", "bulaniklik");
+    setWallpaper(""); assert(!q("#wallpaper") && !lsGet("shion.wallpaper", ""), "kaldirilamadi"); cfg.wallBlur = 0;
+    cfg.msgStyle = "baloncuk"; applyCfg();
+    const el = renderMsg({ id: "b1", channel_id: S.channel.id, author: S.me, content: "selam", timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }, null);
+    q("#messages").append(el);
+    assert(el.classList.contains("own") && getComputedStyle(el.querySelector(".body")).borderTopRightRadius === "16px", "baloncuk yok");
+    el.remove(); cfg.msgStyle = "klasik";
+    cfg.font = "Georgia"; applyCfg();
+    assert(getComputedStyle(document.body).fontFamily.includes("Georgia"), "yazi tipi: " + getComputedStyle(document.body).fontFamily);
+    cfg.font = ""; applyCfg();
+    assert(checkBurst("iyi ki doğdun 🎉") === "konfeti" && q("#burst-canvas"), "konfeti yok");
+    assert(checkBurst("seni seviyorum") === "kalp" && checkBurst("normal mesaj") === null, "efekt eslesmesi");
+    const pop = h("div", "", profileCardHtml({ id: "302", username: "n" }, null));
+    visualProfile(pop, { id: "302" }, { user_profile: { bio: "", theme_colors: [16711680, 255] } });
+    assert(pop.querySelector(".pc.nitro-theme")?.style.getPropertyValue("--t1") === "#ff0000", "nitro tema renkleri");
+  });
+
+  await test("gorsel 2: sekilli cerceve halkasi", async () => {
+    cfg.shape = "altigen"; cfg.deco = { frame: "neon", name: "", card: "", c1: "#ff0000", c2: "#00ff00" }; applyCfg();
+    const css = q("#deco-css").textContent;
+    assert(css.includes("var(--shape-ring)") && document.documentElement.style.getPropertyValue("--shape-ring").includes("stroke"), "halka yok");
+    const img = q(`.me-av img[data-uid="${S.me.id}"]`);
+    assert(getComputedStyle(img).maskImage.split("url(").length === 3, "iki katmanli maske yok: " + getComputedStyle(img).maskImage.slice(0, 60));
+    cfg.shape = "daire"; cfg.deco = { frame: "", name: "", card: "", c1: "#a78bfa", c2: "#22d3ee" }; applyCfg();
+  });
+
+  await test("gorsel 3: avatar susu, sunucu etiketi, isim plakasi", async () => {
+    const au = { id: "401", username: "deko", global_name: "Deko", avatar_decoration_data: { asset: "a_abc" }, primary_guild: { identity_enabled: true, identity_guild_id: "77", tag: "SHN", badge: "bdg" }, collectibles: { nameplate: { asset: "nameplates/nameplates/twilight/" } } };
+    const el = renderMsg({ id: "c1", channel_id: S.channel.id, author: au, content: "hey", timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }, null);
+    const deco = el.querySelector(".av-wrap > img.av-deco");
+    assert(deco && deco.src.includes("/avatar-decoration-presets/a_abc.png") && deco.src.includes("passthrough=false"), "avatar susu yok");
+    el.dispatchEvent(new MouseEvent("mouseenter")); assert(deco.src.includes("passthrough=true"), "animasyon yok");
+    assert(el.querySelector(".clan-tag")?.textContent === "SHN" && el.querySelector(".clan-tag img").src.includes("/guild-tag-badges/77/bdg.png"), "etiket yok");
+    assert(el.querySelector("img.av[data-pop]"), "avatar kayboldu");
+    const row = h("div", "m-row"); plateRow(row, au);
+    assert(row.classList.contains("plated") && row.style.getPropertyValue("--plate").includes("/assets/collectibles/nameplates/nameplates/twilight/static.png"), "plaka");
+    cfg.collectibles = false; assert(clanHtml(au) === "", "kapatma"); cfg.collectibles = true;
+    assert(clanHtml({ primary_guild: { tag: "X", identity_enabled: false } }) === "", "kapali etiket gosterildi");
+  });
+
+  await test("gorsel 3: duvar kagidindan tema, ses temasi, zamanlama", async () => {
+    const c = h("canvas"); c.width = 60; c.height = 30; const x = c.getContext("2d");
+    x.fillStyle = "#ff2060"; x.fillRect(0, 0, 40, 30); x.fillStyle = "#20c0ff"; x.fillRect(40, 0, 20, 30);
+    const p = paletteFromImage(c);
+    const [ah] = hexToHsl(p.accent), [bh] = hexToHsl(p.accent2), [, , bl] = hexToHsl(p.base);
+    assert((ah > 330 || ah < 20) && bh > 180 && bh < 220 && bl < 15, "palet: " + JSON.stringify(p));
+    assert(playUiSound("bildirim", "retro").length === 3 && playUiSound("gonder", "kristal").length === 1 && playUiSound("x", "") === null, "ses");
+    const keep = { ...cfg.schedule }, theme = cfg.theme;
+    cfg.schedule = { on: true, day: "acik", night: "dracula", from: "07:00", to: "19:00" };
+    const at = (hh) => { const d = new Date(); d.setHours(hh, 0, 0, 0); return scheduledTheme(d); };
+    assert(at(12) === "acik" && at(22) === "dracula" && at(3) === "dracula", "zamanlama");
+    cfg.schedule = { ...cfg.schedule, from: "20:00", to: "06:00" };
+    assert(at(23) === "acik" && at(12) === "dracula", "gece yarisini gecen aralik");
+    cfg.schedule = keep; cfg.theme = theme; applyCfg();
+    openStudio();
+    assert(q("#modal-body .st-sched select") && [...document.querySelectorAll("#modal-body .fx-btn")].some((b) => b.textContent.includes("Kristal")), "studyo bolumleri yok");
+    closeModal();
+  });
+
+  await test("gorsel 4: hareketli avatar, profil efekti, ad stili, Shion rozeti", async () => {
+    const box = h("div", "m-row"); box.innerHTML = '<img src="https://cdn.discordapp.com/avatars/5/a_0123abcd.webp?size=64"><img src="https://cdn.discordapp.com/avatars/5/0123.webp?size=64">';
+    document.body.append(box);
+    box.querySelector("img").dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    const [a, b] = box.querySelectorAll("img");
+    assert(a.src.includes("a_0123abcd.webp?size=64&animated=true") && !b.src.includes("animated"), "animasyon: " + a.src);
+    document.body.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    assert(!a.src.includes("animated") && !a.dataset.still, "geri donmedi");
+    box.remove();
+    const u = { id: "501", username: "stil", display_name_styles: { font_id: 3, effect_id: 2, colors: [16711680, 255] } };
+    const el = renderMsg({ id: "d1", channel_id: S.channel.id, author: u, content: "x", timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }, null);
+    const au = el.querySelector(".author");
+    assert(au.classList.contains("styled-name") && au.style.background.includes("linear-gradient") && au.style.background.includes("rgb(255, 0, 0)"), "ad stili: " + au.style.cssText);
+    const pop = h("div", "", profileCardHtml({ id: "502", username: "e" }, null)); document.body.append(pop);
+    DECOS.set("502", { frame: "", name: "", card: "", c1: "#a78bfa", c2: "#22d3ee" });
+    visualProfile(pop, { id: "502" }, { user: { id: "502" }, user_profile: { profile_effect: { id: "1139323098643333937" } } });
+    await sleep(30);
+    const imgs = pop.querySelectorAll(".pfx img");
+    assert(imgs.length === 1 && imgs[0].src.includes("/profile_effects/kar.png"), "profil efekti: " + imgs.length);
+    assert(pop.querySelector(".shion-badge"), "Shion rozeti yok");
+    pop.remove(); DECOS.delete("502");
+  });
+
+  await test("yenilikler penceresi", async () => {
+    lsSet("shion.seenVersion", "0.0.1"); showWhatsNew();
+    assert(q("#modal-body .wn-item") && document.querySelectorAll("#modal-body button.wn-item").length >= 4 && lsGet("shion.seenVersion", "") === SHION_VERSION, "yenilikler");
+    q("#modal-body button.wn-item").click(); await sleep(20);
+    assert(q("#modal-body .st-looks"), "studyo acilmadi"); closeModal();
   });
 
   await test("yatay tasma yok", async () => {

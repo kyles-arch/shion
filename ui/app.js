@@ -13,6 +13,7 @@ const snowTime = (id) => { try { return Number((BigInt(id) >> 22n) + EPOCH); } c
 /* Ayarlar                                                             */
 /* ------------------------------------------------------------------ */
 const THEMES = [
+  ["okyanus", "Okyanus 🌊"], ["gunbatimi", "Gün Batımı 🌅"], ["matrix", "Matrix 💚"], ["kahve", "Kahve ☕"],
   ["gece", "Gece"], ["klasik", "Klasik Koyu"], ["amoled", "AMOLED"], ["nord", "Nord"], ["dracula", "Dracula"],
   ["mocha", "Mocha"], ["rose", "Rosé"], ["tokyo", "Tokyo Gecesi"], ["neon", "Neon"], ["sakura", "Sakura"], ["acik", "Açık"], ["aurora", "Aurora ✨"], ["cam", "Cam 🫧"],
 ];
@@ -89,7 +90,7 @@ function md(text, m) {
   const hold = [];
   const put = (html) => `\u0000${hold.push(html) - 1}\u0000`;
   let s = text
-    .replace(/```(?:[\w+-]+\n)?([\s\S]*?)```/g, (_, c) => put(`<pre><code>${esc(c.replace(/^\n+|\n+$/g, ""))}</code></pre>`))
+    .replace(/```(?:([\w+-]+)\n)?([\s\S]*?)```/g, (_, l, c) => put(`<pre><code${l ? ` data-lang="${esc(l)}"` : ""}>${hlCode(c.replace(/^\n+|\n+$/g, ""), l)}</code></pre>`))
     .replace(/`([^`\n]+)`/g, (_, c) => put(`<code>${esc(c)}</code>`));
   s = esc(s);
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => put(`<a href="${u}">${t}</a>`));
@@ -106,7 +107,7 @@ function md(text, m) {
     })
     .replace(/&lt;#(\d+)&gt;/g, (_, id) => put(`<span class="mention">#${esc(findChannel(id)?.name ?? "kanal")}</span>`))
     .replace(/&lt;(a?):(\w+):(\d+)&gt;/g, (_, a, n, id) => put(`<img class="emoji" src="${CDN}/emojis/${id}.${a ? "gif" : "webp"}?size=48" alt=":${n}:" title=":${n}:">`))
-    .replace(/&lt;t:(-?\d+)(?::[tTdDfFR])?&gt;/g, (_, t) => put(`<span class="ts">${new Date(t * 1000).toLocaleString("tr-TR")}</span>`))
+    .replace(/&lt;t:(-?\d+)(?::([tTdDfFR]))?&gt;/g, (_, t, f) => put(`<span class="ts" title="${esc(new Date(t * 1000).toLocaleString("tr-TR"))}">${esc(fmtStamp(+t, f))}</span>`))
     .replace(/@(everyone|here)/g, (_, w) => put(`<span class="mention">@${w}</span>`));
   s = s
     .replace(/\*\*(.+?)\*\*/gs, "<b>$1</b>")
@@ -115,10 +116,15 @@ function md(text, m) {
     .replace(/(^|[^\w])_(?!\s)(.+?)_(?![\w])/gs, "$1<i>$2</i>")
     .replace(/~~(.+?)~~/gs, "<s>$1</s>")
     .replace(/\|\|(.+?)\|\|/gs, '<span class="spoiler">$1</span>')
-    .replace(/^#{1,3} (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^-# (.+)$/gm, '<small class="subtext">$1</small>')
+    .replace(/^(#{1,3}) (.+)$/gm, (_, l, t) => `<h${l.length + 1} class="mdh">${t}</h${l.length + 1}>`)
+    .replace(/^ *[-*] (.+)$/gm, "<li>$1</li>")
+    .replace(/^ *(\d+)\. (.+)$/gm, '<li class="ol" value="$1">$2</li>')
+    .replace(/<li>.*<\/li>(\n<li>.*<\/li>)*/g, (b) => "<ul>" + b.replace(/\n/g, "") + "</ul>")
+    .replace(/<li class="ol"[^>]*>.*<\/li>(\n<li class="ol"[^>]*>.*<\/li>)*/g, (b) => "<ol>" + b.replace(/\n/g, "") + "</ol>")
     .replace(/^&gt; (.*)$/gm, "<blockquote>$1</blockquote>")
     .replace(/<\/blockquote>\n<blockquote>/g, "<br>")
-    .replace(/(<\/h3>|<\/blockquote>)\n/g, "$1");
+    .replace(/(<\/h[234]>|<\/blockquote>|<\/ul>|<\/ol>|<\/small>)\n/g, "$1");
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => hold[i]);
 }
 
@@ -361,14 +367,15 @@ function rowWithThreads(c, g) {
 const TEXTLIKE = new Set([0, 5]);
 
 function channelRow(c, guildId) {
-  const r = h("div", "ch");
+  const r = h("div", "ch"); r.dataset.id = c.id;
   if (c.hidden) r.classList.add("locked");
   if (S.channel?.id === c.id) r.classList.add("active");
   if (S.unread.has(c.id)) r.classList.add("unread");
   r.innerHTML = `<span class="ico">${c.hidden ? "🔒" : ICONS[c.type] ?? "#"}</span><span class="name">${esc(c.name)}</span>`;
   const mc = S.mentions.get(c.id);
   if (mc) r.append(h("span", "mbadge", mc));
-  r.title = c.hidden ? "Gizli kanal — görme iznin yok" : c.topic || c.name;
+  if (isTypingIn(c.id)) r.classList.add("typing");
+  r.title = c.redacted ? "Gizli kanal — Discord bu kanalın adını artık gizliyor" + (c.name !== "gizli-kanal" ? " (ad önceden kaydedilmiş)" : "") : c.hidden ? "Gizli kanal — görme iznin yok" : c.topic || c.name;
   r.onclick = () => openChannel({ ...c, guild_id: guildId });
   if (S.mutedChannels.has(c.id)) r.classList.add("muted-c");
   r.oncontextmenu = (e) => { e.preventDefault(); channelMenu(e, c, guildId); };
@@ -392,8 +399,8 @@ function renderSidebarInner(list) {
   if (S.view === "home") {
     $("#sb-title").textContent = "Direkt Mesajlar";
     list.append(friendsRow());
-    for (const d of S.dms) {
-      const r = h("div", "ch dm");
+    for (const d of sortDms(S.dms)) {
+      const r = h("div", "ch dm" + (isPinnedDm(d.id) ? " pinned" : "")); r.dataset.id = d.id;
       if (S.channel?.id === d.id) r.classList.add("active");
       if (S.unread.has(d.id)) r.classList.add("unread");
       const name = d.name || d.recipients.map(dname).join(", ") || "Boş grup";
@@ -411,10 +418,10 @@ function renderSidebarInner(list) {
   const g = S.guilds.find((x) => x.id === S.view);
   if (!g) return;
   $("#sb-title").textContent = g.name;
-  const visible = (c) => cfg.showHidden || !c.hidden;
+  const visible = (c) => (cfg.showHidden || !c.hidden) && redactedFilter(c);
   const sortKids = (a, b) => (TEXTLIKE.has(a.type) || a.type === 15) === (TEXTLIKE.has(b.type) || b.type === 15) ? 0 : (TEXTLIKE.has(a.type) || a.type === 15) ? -1 : 1;
   const top = g.channels.filter((c) => c.type !== 4 && !c.parent_id && visible(c)).sort(sortKids);
-  top.forEach((c) => list.append(rowWithThreads(c, g)));
+  appendChannels(list, top, g);
   for (const cat of g.channels.filter((c) => c.type === 4)) {
     const kids = g.channels.filter((c) => c.parent_id === cat.id && visible(c)).sort(sortKids);
     if (!kids.length && (cat.hidden && !cfg.showHidden)) continue;
@@ -425,7 +432,7 @@ function renderSidebarInner(list) {
       cfg.collapsed = [...collapsed]; saveCfg(); renderSidebar();
     };
     list.append(head);
-    if (!collapsed.has(cat.id)) kids.forEach((c) => list.append(rowWithThreads(c, g)));
+    if (!collapsed.has(cat.id)) appendChannels(list, kids, g);
     else kids.filter((c) => c.id === S.channel?.id || S.unread.has(c.id)).forEach((c) => list.append(channelRow(c, g.id)));
   }
 }
@@ -515,6 +522,7 @@ function renderMsg(m, prev) {
     }
     if (m._deleted) c.append(h("span", "del-tag", "SİLİNDİ"));
     body.append(c);
+    if (m.message_snapshots?.length) body.append(renderForward(m));
   }
 
   if (m.attachments?.length) {
@@ -560,7 +568,10 @@ function renderMsg(m, prev) {
   if (m._deleted) btn("✕", "Görünümden kaldır", () => el.remove(), "del");
   extraActions(btn, m, el);
   moreActions(btn, m, el);
+  discordActions(btn, m, el);
+  vencordActions(btn, m, el);
   el.append(side, body, act);
+  vcPost(el, m);
   return el;
 }
 
@@ -668,7 +679,10 @@ async function openChannel(c) {
   input.disabled = c.can_send === false;
   input.placeholder = input.disabled ? "Bu kanala mesaj gönderme iznin yok" : `${c.guild_id ? "#" : "@"}${c.name} kanalına mesaj gönder`;
   restoreDraft(c);
-  $("#messages").innerHTML = '<div class="empty">Yükleniyor…</div>';
+  noteRecent(c.id);
+  const cached = cachedMsgs(c.id);
+  if (cached?.length) { S.msgs = cached; renderMessages(); }
+  else $("#messages").innerHTML = '<div class="empty">Yükleniyor…</div>';
   try {
     const list = await invoke("get_messages", { channelId: c.id, before: null });
     if (S.channel?.id !== c.id) return;
@@ -731,6 +745,7 @@ function setReply(m) {
   S.replyTo = m;
   const bar = $("#reply-bar"); bar.classList.remove("hidden");
   bar.querySelector("span").innerHTML = `<b>${esc(dname(m.author))}</b> kişisine yanıt veriliyor`;
+  replyPingButton(bar);
   $("#input").focus();
 }
 $("#reply-cancel").onclick = () => { S.replyTo = null; $("#reply-bar").classList.add("hidden"); };
@@ -740,14 +755,15 @@ async function send() {
   const text = input.value.trim();
   if ((!text && !S.files.length) || !S.channel || input.disabled) return;
   if (text.startsWith("/") && !S.files.length && (await runSlash(text))) return;
-  const files = S.files.map(({ name, data }) => ({ name, data }));
-  const out = prepareOutgoing(text);
+  const files = outgoingFiles(S.files.map(({ name, data }) => ({ name, data })));
+  const out = prepareOutgoing(outgoingTransform(text));
   input.value = ""; autoGrow(); clearFiles(); saveDraft();
   const reply = S.replyTo?.id ?? null;
+  const replyPing = S.replyPing !== false;
   S.replyTo = null; $("#reply-bar").classList.add("hidden");
   lastTyping = 0;
   if (files.length) toast(`${files.length} dosya yükleniyor…`);
-  try { await invoke("send_message", { channelId: S.channel.id, content: out.content, replyTo: reply, files, silent: out.silent }); }
+  try { await invoke("send_message", { channelId: S.channel.id, content: out.content, replyTo: reply, files, silent: out.silent, replyPing }); }
   catch (e) { toast("Gönderilemedi: " + e); input.value = text; }
 }
 
@@ -812,7 +828,8 @@ function renderReactions(m) {
   const box = h("div", "reactions");
   for (const r of m.reactions) {
     const b = h("button", "react" + (r.me ? " me" : ""), `${emojiHtml(r.emoji, 32)}<span>${r.count}</span>`);
-    b.title = ":" + (r.emoji.name || "") + ":";
+    b.title = ":" + (r.emoji.name || "") + ": — sağ tık: kimler tepki verdi";
+    b.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); showReactors(e, m, r); };
     b.onclick = () => invoke("react", { channelId: m.channel_id, messageId: m.id, emoji: emojiKey(r.emoji), add: !r.me }).catch((e) => toast("Tepki: " + e));
     box.append(b);
   }
@@ -828,8 +845,9 @@ const UNICODE_EMOJI = ("😀 gul,😂 kahkaha,🤣 yerlere,😊 mutlu,😍 ask,�
 
 let emojiPop = null;
 function closeEmojiPop() { emojiPop?.remove(); emojiPop = null; }
-function openEmojiPicker(anchor, onPick) {
+function openEmojiPicker(anchor, onPick0) {
   closeEmojiPop();
+  const onPick = (e) => { noteEmoji(e); onPick0(e); };
   const pop = h("div", "emoji-pop");
   const q = h("input"); q.placeholder = "Emoji ara…";
   const grid = h("div", "emoji-grid scroll");
@@ -838,6 +856,7 @@ function openEmojiPicker(anchor, onPick) {
   const render = () => {
     const s = q.value.toLowerCase().trim(); grid.textContent = "";
     let budget = s ? 600 : 400;
+    if (!s) frequentEmojiRow(grid, onPick);
     for (const g of emojiGroups(guild)) {
       if (budget <= 0) break;
       const custom = (g.emojis || []).filter((e) => !s || e.name.toLowerCase().includes(s)).slice(0, budget);
@@ -1281,6 +1300,8 @@ function renderVoicePanel() {
   const hang = h("button", "icon-btn hang", SVG.hang); hang.title = "Bağlantıyı kes"; hang.onclick = leaveVoice;
   p.querySelector(".vp-top").append(hang);
   videoButtons(p);
+  soundboardButton(p);
+  vcPanelExtras(p);
 }
 
 function renderCallBar() {
@@ -1401,6 +1422,7 @@ async function doLogin(token, remember) {
     $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
     renderMe(); renderRail(); renderSidebar();
     $("#messages").innerHTML = '<div class="empty">Sunucular yükleniyor…</div>';
+    applyCache();
   } catch (e) {
     $("#login-err").textContent = String(e); showSplash(false);
   } finally { btn.disabled = false; btn.textContent = "Giriş yap"; }

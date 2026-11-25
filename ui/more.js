@@ -100,7 +100,7 @@ async function leaveGuild(g) {
   if (g.owner) return toast("Sahibi olduğun sunucudan ayrılamazsın");
   const r = await askModal("Sunucudan ayrıl", `<b>${esc(g.name)}</b> sunucusundan ayrılmak istediğine emin misin? Davet olmadan geri dönemezsin.`, "Ayrıl", { danger: true });
   if (!r.ok) return;
-  try { await invoke("leave_guild", { guildId: g.id }); toast("Sunucudan ayrıldın"); }
+  try { leavingGuild = g.id; await invoke("leave_guild", { guildId: g.id }); toast("Sunucudan ayrıldın"); }
   catch (e) { toast("Ayrılamadın: " + e); }
 }
 function guildExtraItems(g) {

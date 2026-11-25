@@ -444,10 +444,11 @@ function openGifPicker(anchor) {
       const list = Array.isArray(r) ? r : r?.gifs || [];
       grid.textContent = "";
       if (!list.length) grid.innerHTML = '<p class="muted" style="padding:10px">Sonuç yok</p>';
-      for (const g of list.slice(0, 40)) {
-        const b = h("button", "gif");
+      for (const g of (q.value.trim() ? list : [...favGifList(), ...list.filter((x) => !cfg.favGifs.some((f) => f.url === x.url))]).slice(0, 52)) {
+        const b = h("button", "gif" + (g.fav ? " fav" : ""));
+        b.oncontextmenu = (e) => { e.preventDefault(); toggleFavGif(g); b.classList.toggle("fav"); };
         const v = h("video"); v.src = g.src; v.autoplay = v.loop = v.muted = true; v.playsInline = true; v.preload = "metadata";
-        b.append(v); b.title = g.url;
+        b.append(v); b.title = g.url + "\nSağ tık: favorilere ekle/çıkar";
         b.onclick = async () => {
           closeEmojiPop();
           const reply = S.replyTo?.id ?? null; S.replyTo = null; $("#reply-bar").classList.add("hidden");

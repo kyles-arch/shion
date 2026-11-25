@@ -183,6 +183,9 @@ async function openPopout(anchor, userId) {
     pop.querySelector(".pc-body").append(btn);
   }
   profileExtras(pop, u, prof);
+  discordProfile(pop, u, prof);
+  vencordProfile(pop, u, prof);
+  visualProfile(pop, u, prof);
   place();
 }
 document.addEventListener("click", (e) => {
@@ -206,7 +209,7 @@ async function openProfileEditor() {
   profileCache.clear();
   const up = prof.user_profile || {};
   const st = {
-    globalName: me.global_name || "", bio: up.bio || "", pronouns: up.pronouns || "",
+    globalName: me.global_name || "", bio: stripDeco(up.bio || ""), pronouns: up.pronouns || "",
     accent: intColor(up.accent_color ?? me.accent_color) || "#7c6cff",
     avatarData: null, bannerData: null,
     custom: cfg.customText || "", customEmoji: cfg.customEmoji || "",
@@ -221,6 +224,7 @@ async function openProfileEditor() {
       <div><div class="pe-lbl">Avatar</div><div class="pe-row"><button class="btn" id="pe-av">🖼 Resim seç</button><button class="btn" id="pe-av-rm">Kaldır</button></div></div>
       <div><div class="pe-lbl">Banner rengi</div><div class="color-row" id="pe-colors"></div></div>
       <div><div class="pe-lbl">Profil efekti <small class="muted">(Shion'da görünür)</small></div><div class="pe-fx" id="pe-fx"></div></div>
+      <div><button class="btn" id="pe-deco">✨ Çerçeve, isim efekti ve kart süslemeleri…</button></div>
       <input type="file" id="pe-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
     </div>
     <div class="pe-preview"><div class="pe-lbl">Önizleme</div><div id="pe-card"></div></div>
@@ -229,7 +233,7 @@ async function openProfileEditor() {
   $p("#pe-name").value = st.globalName; $p("#pe-bio").value = st.bio; $p("#pe-pron").value = st.pronouns;
   $p("#pe-custom").value = st.custom; $p("#pe-cemoji").value = st.customEmoji;
   const preview = () => {
-    $p("#pe-count").textContent = `${st.bio.length}/190`;
+    $p("#pe-count").textContent = `${st.bio.length}/${cfg.decoShare ? 173 : 190}`;
     $p("#pe-card").innerHTML = profileCardHtml({ ...me, accent_color: parseInt(st.accent.slice(1), 16) }, { user_profile: { ...up, accent_color: parseInt(st.accent.slice(1), 16) } }, {
       globalName: st.globalName || me.username, bio: st.bio, pronouns: st.pronouns, avatarData: st.avatarData === "" ? `${CDN}/embed/avatars/0.png` : st.avatarData,
       status: cfg.status, custom: (st.customEmoji ? st.customEmoji + " " : "") + st.custom, effect: st.effect,
@@ -271,12 +275,14 @@ async function openProfileEditor() {
     rd.readAsDataURL(f);
   };
   $p("#pe-cancel").onclick = closeModal;
+  $p("#pe-deco").onclick = openDecoEditor;
   $p("#pe-save").onclick = async () => {
     const btn = $p("#pe-save"); btn.disabled = true; btn.textContent = "Kaydediliyor…";
     const user = {}, profile = {};
     if (st.globalName !== (me.global_name || "")) user.global_name = st.globalName || null;
     if (st.avatarData !== null) user.avatar = st.avatarData || null;
-    if (st.bio !== (up.bio || "")) profile.bio = st.bio;
+    const decoCode = cfg.decoShare && (cfg.deco.frame || cfg.deco.name || cfg.deco.card) ? encodeDeco(cfg.deco) : "";
+    if (st.bio + decoCode !== (up.bio || "")) profile.bio = st.bio + decoCode;
     if (st.pronouns !== (up.pronouns || "")) profile.pronouns = st.pronouns;
     const accentInt = parseInt(st.accent.slice(1), 16);
     if (accentInt !== (up.accent_color ?? me.accent_color)) profile.accent_color = accentInt;

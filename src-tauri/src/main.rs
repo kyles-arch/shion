@@ -35,6 +35,8 @@ pub struct Core {
     export_cancel: AtomicBool,
     sys_audio: Mutex<Option<audio::AudioHandle>>,
     mic_test: Mutex<Option<audio::AudioHandle>>,
+    /// Uzun sure islem yoksa "bosta" goster
+    auto_idle: AtomicBool,
 }
 
 #[derive(Default)]
@@ -42,16 +44,21 @@ struct Presence {
     status: String,
     custom: Option<Value>,
     game: Option<Value>,
+    /// Kullanicinin elle ayarladigi etkinlik (Oynuyor/Dinliyor/Izliyor/Yarisiyor)
+    rpc: Option<Value>,
 }
 
 /// Durum + ozel durum + oyun aktivitesini gateway'e gonder.
 fn send_presence(core: &CoreRef) -> Result<(), String> {
     let (status, acts) = {
         let p = core.presence.lock().unwrap();
-        let acts: Vec<Value> = p.custom.iter().chain(p.game.iter()).cloned().collect();
+        let acts: Vec<Value> = p.custom.iter().chain(p.rpc.iter()).chain(p.game.iter()).cloned().collect();
         (if p.status.is_empty() { "online".to_string() } else { p.status.clone() }, acts)
     };
-    gw_send(core, json!({"op": 3, "d": {"status": status, "since": 0, "activities": acts, "afk": false}}))
+    let afk = core.auto_idle.load(Ordering::Relaxed) && status == "online";
+    let status = if afk { "idle".to_string() } else { status };
+    let since = if afk { store::now_ms() } else { 0 };
+    gw_send(core, json!({"op": 3, "d": {"status": status, "since": since, "activities": acts, "afk": afk}}))
 }
 
 fn gw_send(core: &CoreRef, v: Value) -> Result<(), String> {
@@ -189,6 +196,7 @@ async fn login(app: AppHandle, core: State<'_, CoreRef>, token: String, remember
         if let Some(log) = log_path(&app).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()) {
             s.deleted = log;
         }
+        s.known_names = gateway::load_names(&app);
     }
     let handle = tauri::async_runtime::spawn(gateway::run(app.clone(), core.inner().clone(), token));
     let old = core.gw.lock().unwrap().replace(handle);
@@ -209,6 +217,9 @@ fn logout(app: AppHandle, core: State<'_, CoreRef>) {
     let mut list = read_accounts(&app);
     list.retain(|a| a["id"].as_str() != Some(me.as_str()));
     write_accounts(&app, &list);
+    if let Some(p) = cache_path(&app, &me) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 #[tauri::command]
@@ -245,6 +256,9 @@ fn remove_account(app: AppHandle, id: String) {
     let mut list = read_accounts(&app);
     list.retain(|a| a["id"].as_str() != Some(id.as_str()));
     write_accounts(&app, &list);
+    if let Some(p) = cache_path(&app, &id) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 #[tauri::command]
@@ -257,6 +271,226 @@ fn get_state(core: State<'_, CoreRef>) -> Value {
     v["log_count"] = json!(s.deleted.len());
     v["folders"] = s.folders.clone();
     v
+}
+
+fn cache_path(app: &AppHandle, uid: &str) -> Option<std::path::PathBuf> {
+    if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    app.path().app_data_dir().ok().map(|d| d.join(format!("cache-{uid}.json")))
+}
+
+/// Hizli acilis: son durum (sunucular, DM'ler) + son kanallarin mesajlarini diske yaz.
+#[tauri::command]
+fn save_cache(app: AppHandle, core: State<'_, CoreRef>, channels: Vec<String>) {
+    let (uid, data) = {
+        let s = core.store.lock().unwrap();
+        if s.guilds.is_empty() && s.dms.is_empty() {
+            return;
+        }
+        let mut v = s.social_json();
+        v["me"] = s.me.clone();
+        v["guilds"] = json!(s.guild_summaries());
+        v["dms"] = json!(s.dm_list());
+        v["folders"] = s.folders.clone();
+        let mut msgs = serde_json::Map::new();
+        for c in channels.iter().take(20) {
+            if let Some(list) = s.messages.get(c) {
+                let n = list.len().saturating_sub(50);
+                let keep: Vec<&Value> = list[n..].iter().filter(|m| m["_deleted"] != true).collect();
+                msgs.insert(c.clone(), json!(keep));
+            }
+        }
+        v["messages"] = Value::Object(msgs);
+        v["saved"] = json!(store::now_ms());
+        (s.me_id.clone(), v)
+    };
+    let Some(p) = cache_path(&app, &uid) else { return };
+    std::thread::spawn(move || {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let tmp = p.with_extension("tmp");
+        if std::fs::write(&tmp, serde_json::to_vec(&data).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(tmp, p);
+        }
+    });
+}
+
+#[tauri::command]
+fn load_cache(app: AppHandle, user_id: String) -> Option<Value> {
+    let p = cache_path(&app, &user_id)?;
+    serde_json::from_slice(&std::fs::read(p).ok()?).ok()
+}
+
+#[tauri::command]
+fn diagnostics(app: AppHandle, core: State<'_, CoreRef>) -> Value {
+    let mut d = core.store.lock().unwrap().diagnostics();
+    d["version"] = json!(app.package_info().version.to_string());
+    d["gateway"] = json!(core.gw_tx.lock().unwrap().is_some());
+    d
+}
+
+/// Seni etiketleyen son mesajlar (Discord'un "Bahsetmeler" kutusu).
+#[tauri::command]
+async fn mentions_inbox(core: State<'_, CoreRef>, before: Option<String>, everyone: bool) -> Result<Value, String> {
+    let t = tok(&core)?;
+    let mut path = format!("/users/@me/mentions?limit=25&roles=true&everyone={everyone}");
+    if let Some(b) = before.filter(|b| b.chars().all(|c| c.is_ascii_digit())) {
+        path.push_str(&format!("&before={b}"));
+    }
+    core.api.get(&t, &path).await
+}
+
+/// Mesaji baska kanala ilet (Discord'un "Ilet" ozelligi).
+#[tauri::command]
+async fn forward_message(core: State<'_, CoreRef>, channel_id: String, message_id: String, guild_id: Option<String>, target: String, note: Option<String>) -> Result<(), String> {
+    let t = tok(&core)?;
+    let mut reference = json!({"type": 1, "message_id": message_id, "channel_id": channel_id});
+    if let Some(g) = guild_id {
+        reference["guild_id"] = json!(g);
+    }
+    let path = format!("/channels/{target}/messages");
+    core.api.req(&t, Method::POST, &path, Some(json!({"message_reference": reference, "nonce": nonce(), "flags": 0, "content": ""}))).await?;
+    if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
+        core.api.req(&t, Method::POST, &path, Some(json!({"content": n, "nonce": nonce(), "flags": 0}))).await?;
+    }
+    Ok(())
+}
+
+/// Bu mesajdan itibaren okunmadi isaretle (bir onceki mesaja manuel ack).
+#[tauri::command]
+async fn mark_unread(core: State<'_, CoreRef>, channel_id: String, before_id: String) -> Result<(), String> {
+    let t = tok(&core)?;
+    core.api
+        .req(&t, Method::POST, &format!("/channels/{channel_id}/messages/{before_id}/ack"), Some(json!({"manual": true, "mention_count": 0})))
+        .await?;
+    core.store.lock().unwrap().read_states.insert(channel_id, (before_id, 0));
+    Ok(())
+}
+
+#[tauri::command]
+fn get_note(core: State<'_, CoreRef>, user_id: String) -> String {
+    core.store.lock().unwrap().notes.get(&user_id).cloned().unwrap_or_default()
+}
+
+#[tauri::command]
+async fn set_note(core: State<'_, CoreRef>, user_id: String, note: String) -> Result<(), String> {
+    let t = tok(&core)?;
+    let note: String = note.chars().take(256).collect();
+    core.api.req(&t, Method::PUT, &format!("/users/@me/notes/{user_id}"), Some(json!({"note": note}))).await?;
+    let mut s = core.store.lock().unwrap();
+    if note.is_empty() {
+        s.notes.remove(&user_id);
+    } else {
+        s.notes.insert(user_id, note);
+    }
+    Ok(())
+}
+
+/// Ses tahtasi: kanala ses cal.
+#[tauri::command]
+async fn send_sound(core: State<'_, CoreRef>, channel_id: String, sound_id: String, source_guild_id: Option<String>) -> Result<(), String> {
+    let t = tok(&core)?;
+    let mut body = json!({"sound_id": sound_id});
+    if let Some(g) = source_guild_id {
+        body["source_guild_id"] = json!(g);
+    }
+    core.api.req(&t, Method::POST, &format!("/channels/{channel_id}/send-soundboard-sound"), Some(body)).await.map(|_| ())
+}
+
+#[tauri::command]
+async fn default_sounds(core: State<'_, CoreRef>) -> Result<Value, String> {
+    let t = tok(&core)?;
+    core.api.get(&t, "/soundboard-default-sounds").await
+}
+
+/// Discord profil efektlerinin katman tanimlari (profilde yalnizca efekt kimligi gelir).
+#[tauri::command]
+async fn profile_effects(core: State<'_, CoreRef>) -> Result<Value, String> {
+    let t = tok(&core)?;
+    core.api.get(&t, "/user-profile-effects").await
+}
+
+#[tauri::command]
+fn guild_events(core: State<'_, CoreRef>, guild_id: String) -> Vec<Value> {
+    let s = core.store.lock().unwrap();
+    let mut v = s.guild(&guild_id).map(|g| g.events.clone()).unwrap_or_default();
+    v.sort_by(|a, b| a["scheduled_start_time"].as_str().unwrap_or("").cmp(b["scheduled_start_time"].as_str().unwrap_or("")));
+    v
+}
+
+/// Elle ozel etkinlik (CustomRPC). type: 0 oynuyor, 2 dinliyor, 3 izliyor, 5 yarisiyor.
+#[tauri::command]
+fn set_custom_rpc(core: State<'_, CoreRef>, activity: Option<Value>) -> Result<(), String> {
+    let act = match activity {
+        Some(a) => {
+            let name: String = a["name"].as_str().unwrap_or("").trim().chars().take(128).collect();
+            if name.is_empty() {
+                return Err("Ad bos olamaz".into());
+            }
+            let ty = a["type"].as_u64().filter(|t| [0, 2, 3, 5].contains(t)).unwrap_or(0);
+            let mut v = json!({"name": name, "type": ty, "timestamps": {"start": store::now_ms()}});
+            for k in ["details", "state"] {
+                if let Some(t) = a[k].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+                    v[k] = json!(t.chars().take(128).collect::<String>());
+                }
+            }
+            Some(v)
+        }
+        None => None,
+    };
+    core.presence.lock().unwrap().rpc = act;
+    send_presence(&core)
+}
+
+/// Mesaj baglantisi onizlemesi icin tek mesaj.
+#[tauri::command]
+async fn fetch_message(core: State<'_, CoreRef>, channel_id: String, message_id: String) -> Result<Option<Value>, String> {
+    if !channel_id.chars().all(|c| c.is_ascii_digit()) || !message_id.chars().all(|c| c.is_ascii_digit()) {
+        return Err("Gecersiz kimlik".into());
+    }
+    let t = tok(&core)?;
+    let v = core.api.get(&t, &format!("/channels/{channel_id}/messages?limit=1&around={message_id}")).await?;
+    Ok(v.as_array().and_then(|a| a.iter().find(|m| m["id"].as_str() == Some(message_id.as_str())).cloned()))
+}
+
+/// Bir tepkiyi kimlerin verdigi.
+#[tauri::command]
+async fn reaction_users(core: State<'_, CoreRef>, channel_id: String, message_id: String, emoji: String) -> Result<Value, String> {
+    let t = tok(&core)?;
+    core.api
+        .get(&t, &format!("/channels/{channel_id}/messages/{message_id}/reactions/{}?limit=100&type=0", api::enc(&emoji)))
+        .await
+}
+
+/// Ozel emojiyi baska bir sunucuya kopyala (EmoteCloner).
+#[tauri::command]
+async fn clone_emoji(core: State<'_, CoreRef>, guild_id: String, name: String, url: String) -> Result<Value, String> {
+    use base64::Engine;
+    if !extra::allowed_media(&url) {
+        return Err("Sadece Discord CDN".into());
+    }
+    let t = tok(&core)?;
+    let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(32).collect();
+    if name.len() < 2 {
+        return Err("Emoji adi en az 2 karakter olmali".into());
+    }
+    let bytes = core.api.bytes(&url).await?;
+    if bytes.len() > 256 * 1024 {
+        return Err("Emoji 256 KB'tan buyuk".into());
+    }
+    let mime = if url.contains(".gif") { "image/gif" } else if url.contains(".png") { "image/png" } else { "image/webp" };
+    let image = format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
+    core.api.req(&t, Method::POST, &format!("/guilds/{guild_id}/emojis"), Some(json!({"name": name, "image": image, "roles": []}))).await
+}
+
+#[tauri::command]
+fn set_auto_idle(core: State<'_, CoreRef>, idle: bool) -> Result<(), String> {
+    if core.auto_idle.swap(idle, Ordering::Relaxed) == idle {
+        return Ok(());
+    }
+    send_presence(&core)
 }
 
 #[tauri::command]
@@ -296,6 +530,7 @@ async fn send_message(
     poll: Option<Value>,
     silent: Option<bool>,
     sticker_ids: Option<Vec<String>>,
+    reply_ping: Option<bool>,
 ) -> Result<Value, String> {
     use base64::Engine;
     let t = tok(&core)?;
@@ -310,6 +545,9 @@ async fn send_message(
     }
     if let Some(r) = reply_to {
         body["message_reference"] = json!({"message_id": r, "channel_id": channel_id});
+        if reply_ping == Some(false) {
+            body["allowed_mentions"] = json!({"parse": ["users", "roles", "everyone"], "replied_user": false});
+        }
     }
     let path = format!("/channels/{channel_id}/messages");
     let files = files.unwrap_or_default();
@@ -464,7 +702,7 @@ fn set_status(core: State<'_, CoreRef>, status: String, custom_text: Option<Stri
 #[tauri::command]
 async fn get_profile(core: State<'_, CoreRef>, user_id: String, guild_id: Option<String>) -> Result<Value, String> {
     let t = tok(&core)?;
-    let mut path = format!("/users/{user_id}/profile?with_mutual_guilds=true&with_mutual_friends=false");
+    let mut path = format!("/users/{user_id}/profile?with_mutual_guilds=true&with_mutual_friends=true");
     if let Some(g) = guild_id {
         path.push_str(&format!("&guild_id={g}"));
     }
@@ -1235,6 +1473,7 @@ fn main() {
         self_video: AtomicBool::new(false),
         presence: Mutex::new(Presence::default()),
         game_detect: AtomicBool::new(false),
+        auto_idle: AtomicBool::new(false),
         export_cancel: AtomicBool::new(false),
         sys_audio: Mutex::new(None),
         mic_test: Mutex::new(None),
@@ -1310,6 +1549,23 @@ fn main() {
         .manage(core)
         .invoke_handler(tauri::generate_handler![
             saved_token,
+            set_custom_rpc,
+            fetch_message,
+            reaction_users,
+            clone_emoji,
+            save_cache,
+            load_cache,
+            diagnostics,
+            mentions_inbox,
+            forward_message,
+            mark_unread,
+            get_note,
+            set_note,
+            send_sound,
+            default_sounds,
+            profile_effects,
+            guild_events,
+            set_auto_idle,
             login,
             logout,
             get_state,

@@ -167,9 +167,14 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             let token = std::mem::take(&mut s.token);
             let old_msgs = std::mem::take(&mut s.messages);
             let old_log = std::mem::take(&mut s.deleted);
-            *s = Store { token, active_channel: active, messages: old_msgs, deleted: old_log, ..Default::default() };
+            let known_names = std::mem::take(&mut s.known_names);
+            *s = Store { token, active_channel: active, messages: old_msgs, deleted: old_log, known_names, ..Default::default() };
             s.set_me(d["user"].clone());
             s.gw_session = d["session_id"].as_str().unwrap_or("").to_string();
+            if let Some(n) = d["notes"].as_object() {
+                s.notes = n.iter().filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string()))).collect();
+            }
+            s.diag = ready_diag(d);
             for u in arr(&d["users"]) {
                 s.cache_user(u);
             }
@@ -197,7 +202,14 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             s.load_social(d);
             let missing: Vec<String> = s.guilds.iter().filter(|g| !g.members_known).map(|g| g.id.clone()).collect();
             let token = s.token.clone();
+            let gids: Vec<String> = s.guilds.iter().map(|g| g.id.clone()).collect();
+            let reqs: Vec<(String, Vec<String>)> = gids.into_iter().map(|g| { let m = s.take_missing_voice_users(&g); (g, m) }).collect();
+            let names = take_names(&mut s);
             drop(s);
+            for (g, ids) in reqs {
+                request_members(core, &g, ids);
+            }
+            save_names(app, names);
             let _ = app.emit("gw-ready", ());
             if !missing.is_empty() {
                 tauri::async_runtime::spawn(fetch_my_roles(app.clone(), core.clone(), token, me, missing));
@@ -208,7 +220,53 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             let me = s.me_id.clone();
             let m = arr(&d["members"]).iter().find(|m| m["user"]["id"].as_str() == Some(me.as_str()));
             s.load_guild(d, m);
+            let gid = d["id"].as_str().unwrap_or("").to_string();
+            let ids = s.take_missing_voice_users(&gid);
+            request_members(core, &gid, ids);
+            save_names(app, take_names(&mut s));
             guilds_changed = true;
+        }
+        "USER_NOTE_UPDATE" => {
+            let id = d["id"].as_str().unwrap_or("").to_string();
+            match d["note"].as_str().filter(|n| !n.is_empty()) {
+                Some(n) => {
+                    s.notes.insert(id, n.to_string());
+                }
+                None => {
+                    s.notes.remove(&id);
+                }
+            }
+            return;
+        }
+        "GUILD_SCHEDULED_EVENT_CREATE" | "GUILD_SCHEDULED_EVENT_UPDATE" | "GUILD_SCHEDULED_EVENT_DELETE" => {
+            s.on_event(d, t.ends_with("DELETE"));
+            guilds_changed = true;
+        }
+        "GUILD_SOUNDBOARD_SOUND_CREATE" | "GUILD_SOUNDBOARD_SOUND_UPDATE" | "GUILD_SOUNDBOARD_SOUND_DELETE" => {
+            guilds_changed = s.on_sound(d, t.ends_with("DELETE"));
+        }
+        "VOICE_CHANNEL_EFFECT_SEND" => {
+            drop(s);
+            let _ = app.emit("voice-effect", d);
+            return;
+        }
+        "GUILD_MEMBERS_CHUNK" => {
+            let gid = d["guild_id"].as_str().unwrap_or("").to_string();
+            let mut updates = vec![];
+            for m in arr(&d["members"]) {
+                s.cache_member(&gid, m);
+                let uid = m["user"]["id"].as_str().unwrap_or("");
+                if let Some(v) = s.guild(&gid).and_then(|g| g.voice_states.get(uid)).cloned() {
+                    let mut sum = s.voice_summary(&v);
+                    sum["prev_channel_id"] = v["channel_id"].clone();
+                    updates.push(sum);
+                }
+            }
+            drop(s);
+            for u in updates {
+                let _ = app.emit("voice-state", u);
+            }
+            return;
         }
         "GUILD_UPDATE" => {
             if let Some(g) = s.guild_mut(d["id"].as_str().unwrap_or("")) {
@@ -227,13 +285,20 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
         }
         "GUILD_DELETE" => {
             let id = d["id"].as_str().unwrap_or("");
+            if d["unavailable"] != true {
+                if let Some(g) = s.guild(id) {
+                    let _ = app.emit("guild-removed", json!({"id": id, "name": g.name}));
+                }
+            }
             s.guilds.retain(|g| g.id != id);
             guilds_changed = true;
         }
         "CHANNEL_CREATE" | "CHANNEL_UPDATE" => {
             if let Some(gid) = d["guild_id"].as_str() {
+                let mut c = d.clone();
+                s.learn_channel(&mut c);
                 if let Some(g) = s.guild_mut(gid) {
-                    g.channels.insert(d["id"].as_str().unwrap_or("").to_string(), d.clone());
+                    g.channels.insert(d["id"].as_str().unwrap_or("").to_string(), c);
                 }
             } else {
                 s.add_dm(d);
@@ -323,7 +388,9 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             let _ = app.emit("friends", s.social_json()["friends"].clone());
         }
         "RELATIONSHIP_REMOVE" => {
-            s.relationships.remove(d["id"].as_str().unwrap_or(""));
+            if let Some(old) = s.relationships.remove(d["id"].as_str().unwrap_or("")) {
+                let _ = app.emit("rel-removed", old);
+            }
             let _ = app.emit("friends", s.social_json()["friends"].clone());
         }
         "PRESENCE_UPDATE" => {
@@ -406,6 +473,9 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             }
         }
         "TYPING_START" => {
+            if d["user_id"].as_str() != Some(s.me_id.as_str()) {
+                let _ = app.emit("typing-any", json!({"channel_id": d["channel_id"], "user_id": d["user_id"]}));
+            }
             if s.active_channel == d["channel_id"].as_str().unwrap_or("") && d["user_id"].as_str() != Some(s.me_id.as_str()) {
                 let uid = d["user_id"].as_str().unwrap_or("");
                 let user = if d["member"]["user"].is_object() { d["member"]["user"].clone() } else { s.users.get(uid).cloned().unwrap_or(Value::Null) };
@@ -420,6 +490,10 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
         }
         "VOICE_STATE_UPDATE" => {
             let sum = s.on_voice_state(d);
+            if let Some(gid) = d["guild_id"].as_str() {
+                let ids = s.take_missing_voice_users(gid);
+                request_members(core, gid, ids);
+            }
             let _ = app.emit("voice-state", sum);
             if d["user_id"].as_str() == Some(s.me_id.as_str()) {
                 let me = s.me_id.clone();
@@ -535,4 +609,59 @@ async fn fetch_my_roles(app: AppHandle, core: CoreRef, token: String, me: String
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
+}
+/// Bilinmeyen kullanicilari gateway'den iste (op 8, en fazla 100'er).
+fn request_members(core: &CoreRef, gid: &str, ids: Vec<String>) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Some(tx) = core.gw_tx.lock().unwrap().as_ref() {
+        for chunk in ids.chunks(100) {
+            let _ = tx.send(json!({"op": 8, "d": {"guild_id": gid, "user_ids": chunk, "presences": false}}).to_string());
+        }
+    }
+}
+
+fn names_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    app.path().app_data_dir().ok().map(|d| d.join("channel-names.json"))
+}
+
+/// Kayitli kanal adlarini yukle (uygulama acilisinda).
+pub fn load_names(app: &AppHandle) -> std::collections::HashMap<String, String> {
+    names_path(app).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn take_names(s: &mut Store) -> Option<std::collections::HashMap<String, String>> {
+    if !s.known_names_dirty {
+        return None;
+    }
+    s.known_names_dirty = false;
+    Some(s.known_names.clone())
+}
+
+fn save_names(app: &AppHandle, names: Option<std::collections::HashMap<String, String>>) {
+    let (Some(n), Some(p)) = (names, names_path(app)) else { return };
+    std::thread::spawn(move || {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(p, serde_json::to_vec(&n).unwrap_or_default());
+    });
+}
+
+/// READY'nin yapisal ozeti: hangi alanlar geldi, eski bicim alanlari var mi.
+fn ready_diag(d: &Value) -> Value {
+    let keys: Vec<String> = d.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    let expected = ["guilds", "private_channels", "relationships", "read_state", "user_guild_settings", "user_settings", "session_id", "resume_gateway_url"];
+    let missing: Vec<&str> = expected.iter().filter(|k| !keys.iter().any(|x| x == *k)).copied().collect();
+    let guilds = arr(&d["guilds"]);
+    let with_members = guilds.iter().filter(|g| g["members"].is_array()).count();
+    let redacted: usize = guilds.iter().map(|g| arr(&g["channels"]).iter().filter(|c| crate::store::is_redacted(c)).count()).sum();
+    json!({
+        "time": crate::store::now_ms(), "keys": keys.len(), "missing": missing,
+        "legacy_users": d["users"].is_array(), "legacy_merged_members": d["merged_members"].is_array(),
+        "guilds": guilds.len(), "guilds_with_members": with_members, "redacted_channels": redacted,
+        "api_version": d["v"]
+    })
 }

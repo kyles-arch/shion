@@ -16,6 +16,17 @@ fn sfv(v: &Value) -> u64 {
 fn st(v: &Value) -> String {
     v.as_str().unwrap_or("").to_string()
 }
+/// Kullanıcıyı küçült ama Discord koleksiyonlarını (avatar süsü, klan etiketi, isim plakası) koru.
+pub fn slim_user(u: &Value) -> Value {
+    let mut o = json!({"id": u["id"], "username": u["username"], "global_name": u["global_name"], "avatar": u["avatar"]});
+    for k in ["avatar_decoration_data", "primary_guild", "clan", "collectibles", "display_name_styles", "bot"] {
+        if !u[k].is_null() {
+            o[k] = u[k].clone();
+        }
+    }
+    o
+}
+
 pub fn arr(v: &Value) -> &[Value] {
     v.as_array().map(|a| a.as_slice()).unwrap_or(&[])
 }
@@ -41,6 +52,14 @@ pub struct Guild {
     pub voice_states: HashMap<String, Value>,
     pub my_roles: Vec<String>,
     pub members_known: bool,
+    /// kullanici id -> sunucu takma adi
+    pub nicks: HashMap<String, String>,
+    /// Planlanmis etkinlikler
+    pub events: Vec<Value>,
+    /// Ses tahtasi sesleri
+    pub sounds: Vec<Value>,
+    /// Sunucu bilgi karti icin ozet (uye sayisi, takviye, ozellikler...)
+    pub meta: Value,
 }
 
 #[derive(Default)]
@@ -70,6 +89,20 @@ pub struct Store {
     pub gw_session: String,
     /// Anahtar kelime bildirimleri (kucuk harf)
     pub keywords: Vec<String>,
+    /// Kanal id -> bilinen gercek ad (Discord gizli kanal adlarini artik "___hidden___" olarak gonderiyor)
+    pub known_names: HashMap<String, String>,
+    pub known_names_dirty: bool,
+    /// Bilgisi istenmis (op 8) kullanicilar; tekrar istememek icin
+    pub requested_users: HashSet<String>,
+    /// Kullanici notlari (id -> not)
+    pub notes: HashMap<String, String>,
+    /// Son READY'nin teshis ozeti
+    pub diag: Value,
+}
+
+/// Discord tarafindan adi gizlenmis kanal mi?
+pub fn is_redacted(c: &Value) -> bool {
+    c["name"].as_str().map_or(false, |n| n.starts_with("___") && n.contains("hidden"))
 }
 
 impl Store {
@@ -107,7 +140,7 @@ impl Store {
         } else {
             self.users.get(r["user_id"].as_str().unwrap_or(&id)).cloned().unwrap_or(json!({"id": id}))
         };
-        let user = json!({"id": user["id"], "username": user["username"], "global_name": user["global_name"], "avatar": user["avatar"]});
+        let user = slim_user(&user);
         self.relationships.insert(id.clone(), json!({"id": id, "type": r["type"], "nickname": r["nickname"], "user": user}));
     }
 
@@ -117,7 +150,7 @@ impl Store {
         if id.is_empty() || (!p["guild_id"].is_null() && !self.relationships.contains_key(&id)) {
             return false;
         }
-        let v = json!({"status": p["status"], "activities": p["activities"]});
+        let v = json!({"status": p["status"], "activities": p["activities"], "client_status": p["client_status"]});
         if self.presences.get(&id) == Some(&v) {
             return false;
         }
@@ -188,6 +221,59 @@ impl Store {
         }
     }
 
+    /// Kanal adini ogren (gizlenmemisse) ya da daha once bilinen adla doldur.
+    pub fn learn_channel(&mut self, c: &mut Value) {
+        let id = st(&c["id"]);
+        if id.is_empty() {
+            return;
+        }
+        if is_redacted(c) {
+            c["redacted"] = json!(true);
+            c["name"] = json!(self.known_names.get(&id).cloned().unwrap_or_else(|| "gizli-kanal".into()));
+        } else if let Some(n) = c["name"].as_str() {
+            if self.known_names.get(&id).map(|x| x.as_str()) != Some(n) {
+                self.known_names.insert(id, n.to_string());
+                self.known_names_dirty = true;
+            }
+        }
+    }
+
+    /// Sunucu uyesini (kullanici + takma ad) onbellege al.
+    pub fn cache_member(&mut self, gid: &str, m: &Value) {
+        let uid = m["user"]["id"].as_str().or(m["user_id"].as_str()).unwrap_or("").to_string();
+        if uid.is_empty() {
+            return;
+        }
+        if m["user"].is_object() {
+            self.cache_user(&m["user"]);
+        }
+        if let Some(g) = self.guild_mut(gid) {
+            match m["nick"].as_str() {
+                Some(n) => {
+                    g.nicks.insert(uid, n.to_string());
+                }
+                None => {
+                    g.nicks.remove(&uid);
+                }
+            }
+        }
+    }
+
+    /// Ses kanalinda olup bilgisi bilinmeyen kullanicilar (henuz istenmemis olanlar).
+    pub fn take_missing_voice_users(&mut self, gid: &str) -> Vec<String> {
+        let Some(g) = self.guild(gid) else { return vec![] };
+        let ids: Vec<String> = g
+            .voice_states
+            .iter()
+            .filter(|(uid, v)| !v["member"]["user"].is_object() && !self.users.contains_key(*uid) && !self.requested_users.contains(*uid))
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        for id in &ids {
+            self.requested_users.insert(id.clone());
+        }
+        ids
+    }
+
     pub fn load_guild<'a>(&mut self, g: &'a Value, member: Option<&'a Value>) {
         if g["unavailable"].as_bool() == Some(true) {
             return;
@@ -207,6 +293,7 @@ impl Store {
         for c in arr(&g["channels"]) {
             let mut c = c.clone();
             c["guild_id"] = json!(id);
+            self.learn_channel(&mut c);
             guild.channels.insert(st(&c["id"]), c);
         }
         for t in arr(&g["threads"]) {
@@ -215,6 +302,16 @@ impl Store {
             guild.threads.insert(st(&t["id"]), t);
         }
         guild.emojis = arr(&g["emojis"]).to_vec();
+        guild.events = arr(&g["guild_scheduled_events"]).to_vec();
+        let pick = |k: &str| if props[k].is_null() { g[k].clone() } else { props[k].clone() };
+        guild.meta = json!({
+            "member_count": g["member_count"], "joined_at": g["joined_at"],
+            "premium_tier": pick("premium_tier"), "boosts": pick("premium_subscription_count"),
+            "description": pick("description"), "vanity": pick("vanity_url_code"), "features": pick("features"),
+            "banner": pick("banner"), "verification_level": pick("verification_level"), "locale": pick("preferred_locale"),
+            "max_members": pick("max_members"), "nsfw_level": pick("nsfw_level")
+        });
+        guild.sounds = arr(&g["soundboard_sounds"]).to_vec();
         guild.stickers = arr(&g["stickers"]).to_vec();
         for vs in arr(&g["voice_states"]) {
             if vs["channel_id"].is_string() {
@@ -239,9 +336,16 @@ impl Store {
         if guild.owner_id == me {
             guild.members_known = true;
         }
+        if let Some(old) = self.guild(&id) {
+            guild.nicks = old.nicks.clone();
+        }
         match self.guilds.iter().position(|x| x.id == id) {
             Some(i) => self.guilds[i] = guild,
             None => self.guilds.push(guild),
+        }
+        // Discord artik kullanicilari READY'nin ust "users" listesinde degil, sunucunun "members" listesinde veriyor.
+        for m in arr(&g["members"]) {
+            self.cache_member(&id, m);
         }
     }
 
@@ -273,7 +377,7 @@ impl Store {
                         json!({
                             "id": c["id"], "name": c["name"], "type": c["type"],
                             "parent_id": c["parent_id"], "position": c["position"],
-                            "topic": c["topic"], "nsfw": c["nsfw"],
+                            "topic": c["topic"], "nsfw": c["nsfw"], "redacted": c["redacted"] == true,
                             "last_message_id": c["last_message_id"],
                             "hidden": g.members_known && p & perms::VIEW == 0,
                             "can_send": p & perms::SEND != 0,
@@ -307,8 +411,14 @@ impl Store {
                     .map(|e| json!({"id": e["id"], "name": e["name"], "format_type": e["format_type"]}))
                     .collect();
                 let voice: Vec<Value> = g.voice_states.values().map(|v| self.voice_summary(v)).collect();
+                let sounds: Vec<Value> = g
+                    .sounds
+                    .iter()
+                    .filter(|x| x["available"] != false)
+                    .map(|x| json!({"sound_id": x["sound_id"], "name": x["name"], "emoji_name": x["emoji_name"], "emoji_id": x["emoji_id"], "volume": x["volume"]}))
+                    .collect();
                 let my_top = g.my_roles.iter().filter_map(|r| g.roles.get(r)).map(|r| r["position"].as_i64().unwrap_or(0)).max().unwrap_or(0);
-                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "stickers": stickers, "voice_states": voice})
+                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "stickers": stickers, "voice_states": voice, "sounds": sounds, "events": g.events.len(), "meta": g.meta})
             })
             .collect()
     }
@@ -320,7 +430,7 @@ impl Store {
             .map(|c| {
                 let rec: Vec<Value> = arr(&c["recipients"])
                     .iter()
-                    .map(|u| json!({"id": u["id"], "username": u["username"], "global_name": u["global_name"], "avatar": u["avatar"]}))
+                    .map(slim_user)
                     .collect();
                 json!({"id": c["id"], "type": c["type"], "name": c["name"], "icon": c["icon"], "recipients": rec, "last_message_id": c["last_message_id"]})
             })
@@ -461,9 +571,14 @@ impl Store {
         } else {
             self.users.get(&uid).cloned().unwrap_or(json!({"id": uid}))
         };
+        let nick = if v["member"].is_object() {
+            v["member"]["nick"].clone()
+        } else {
+            v["guild_id"].as_str().and_then(|g| self.guild(g)).and_then(|g| g.nicks.get(&uid)).map(|n| json!(n)).unwrap_or(Value::Null)
+        };
         json!({
             "user_id": uid, "channel_id": v["channel_id"], "guild_id": v["guild_id"],
-            "nick": v["member"]["nick"], "user": {"id": user["id"], "username": user["username"], "global_name": user["global_name"], "avatar": user["avatar"]},
+            "nick": nick, "user": slim_user(&user),
             "self_mute": v["self_mute"], "self_deaf": v["self_deaf"], "mute": v["mute"], "deaf": v["deaf"],
             "self_video": v["self_video"], "self_stream": v["self_stream"]
         })
@@ -471,8 +586,10 @@ impl Store {
 
     /// VOICE_STATE_UPDATE isle; arayuze gidecek sade durumu dondurur (onceki kanal dahil).
     pub fn on_voice_state(&mut self, v: &Value) -> Value {
-        if v["member"]["user"].is_object() {
-            self.cache_user(&v["member"]["user"]);
+        if v["member"].is_object() {
+            if let Some(gid) = v["guild_id"].as_str() {
+                self.cache_member(gid, &v["member"]);
+            }
         }
         let uid = st(&v["user_id"]);
         let mut prev = Value::Null;
@@ -489,6 +606,51 @@ impl Store {
         let mut sum = self.voice_summary(v);
         sum["prev_channel_id"] = prev;
         sum
+    }
+
+    /// Uygulamanin gordugu verinin saglik ozeti (teshis ekrani icin; token icermez).
+    pub fn diagnostics(&self) -> Value {
+        let mut channels = 0;
+        let mut redacted = 0;
+        let mut hidden_known = 0;
+        let mut voice = 0;
+        let mut voice_unknown = 0;
+        let mut no_roles = 0;
+        for g in &self.guilds {
+            channels += g.channels.len();
+            redacted += g.channels.values().filter(|c| c["redacted"] == true).count();
+            hidden_known += g.channels.values().filter(|c| c["redacted"] == true && self.known_names.contains_key(&st(&c["id"]))).count();
+            voice += g.voice_states.len();
+            voice_unknown += g.voice_states.iter().filter(|(u, v)| !v["member"]["user"].is_object() && !self.users.contains_key(*u)).count();
+            if !g.members_known {
+                no_roles += 1;
+            }
+        }
+        json!({
+            "guilds": self.guilds.len(), "channels": channels, "redacted": redacted, "redacted_named": hidden_known,
+            "voice_users": voice, "voice_unknown": voice_unknown, "guilds_without_roles": no_roles,
+            "users_cached": self.users.len(), "dms": self.dms.len(), "friends": self.relationships.len(),
+            "known_names": self.known_names.len(), "notes": self.notes.len(), "ready": self.diag
+        })
+    }
+
+    /// Etkinlik olusturma/guncelleme/silme.
+    pub fn on_event(&mut self, ev: &Value, delete: bool) {
+        let Some(g) = self.guild_mut(ev["guild_id"].as_str().unwrap_or("")) else { return };
+        g.events.retain(|e| e["id"] != ev["id"]);
+        if !delete {
+            g.events.push(ev.clone());
+        }
+    }
+
+    /// Ses tahtasi sesi ekleme/guncelleme/silme.
+    pub fn on_sound(&mut self, snd: &Value, delete: bool) -> bool {
+        let Some(g) = self.guild_mut(snd["guild_id"].as_str().unwrap_or("")) else { return false };
+        g.sounds.retain(|e| e["sound_id"] != snd["sound_id"]);
+        if !delete {
+            g.sounds.push(snd.clone());
+        }
+        true
     }
 
     /// Mesaj icerigi kayitli anahtar kelimelerden birini iceriyorsa onu dondurur.
@@ -632,6 +794,19 @@ impl Store {
 }
 
 #[cfg(test)]
+mod collectible_tests {
+    use super::*;
+    #[test]
+    fn slim_user_keeps_collectibles() {
+        let u = json!({"id": "1", "username": "a", "email": "x", "avatar_decoration_data": {"asset": "a_1"}, "primary_guild": {"tag": "SHN"}, "collectibles": null});
+        let s = slim_user(&u);
+        assert_eq!(s["avatar_decoration_data"]["asset"], "a_1");
+        assert_eq!(s["primary_guild"]["tag"], "SHN");
+        assert!(s.get("email").is_none() && s.get("collectibles").is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -701,6 +876,54 @@ mod tests {
         assert_eq!(s.guild("g").unwrap().voice_states.len(), 1);
         s.on_voice_state(&json!({"guild_id": "g", "user_id": "u", "channel_id": null}));
         assert!(s.guild("g").unwrap().voice_states.is_empty());
+    }
+
+    #[test]
+    fn new_ready_format_members_and_redacted_names() {
+        let mut s = Store::default();
+        s.known_names.insert("c2".into(), "eski-ad".into());
+        let g = json!({"id": "g", "name": "G", "roles": [], "channels": [
+            {"id": "c1", "name": "genel", "type": 0},
+            {"id": "c2", "name": "___hidden___", "type": 0, "flags": 131072},
+            {"id": "c3", "name": "___hidden___", "type": 2}],
+            "members": [{"user": {"id": "u1", "username": "ali", "global_name": "Ali"}, "nick": "Kaptan", "roles": []}],
+            "voice_states": [{"user_id": "u1", "channel_id": "c1"}, {"user_id": "u2", "channel_id": "c1"}]});
+        s.load_guild(&g, None);
+        let sum = s.guild_summaries();
+        let ch = sum[0]["channels"].as_array().unwrap();
+        let by = |id: &str| ch.iter().find(|c| c["id"] == id).unwrap().clone();
+        assert_eq!(by("c1")["name"], "genel");
+        assert_eq!(by("c2")["name"], "eski-ad");
+        assert_eq!(by("c2")["redacted"], true);
+        assert_eq!(by("c3")["name"], "gizli-kanal");
+        assert_eq!(s.known_names["c1"], "genel");
+        // ses durumunda member yok: kullanici ve takma ad members listesinden gelir
+        let v = s.voice_summary(&json!({"guild_id": "g", "user_id": "u1", "channel_id": "c1"}));
+        assert_eq!(v["user"]["global_name"], "Ali");
+        assert_eq!(v["nick"], "Kaptan");
+        // u2 bilinmiyor: bir kez istenir
+        assert_eq!(s.take_missing_voice_users("g"), vec!["u2".to_string()]);
+        assert!(s.take_missing_voice_users("g").is_empty());
+    }
+
+    #[test]
+    fn events_sounds_and_diagnostics() {
+        let mut s = Store::default();
+        s.load_guild(&json!({"id": "g", "name": "G", "roles": [], "channels": [{"id": "c", "name": "___hidden___", "type": 0}],
+            "guild_scheduled_events": [{"id": "e1", "guild_id": "g", "name": "Turnuva"}],
+            "soundboard_sounds": [{"sound_id": "s1", "guild_id": "g", "name": "boom", "available": true}, {"sound_id": "s2", "name": "x", "available": false}],
+            "voice_states": [{"user_id": "u9", "channel_id": "c"}]}), None);
+        let sum = s.guild_summaries();
+        assert_eq!(sum[0]["events"], 1);
+        assert_eq!(sum[0]["sounds"].as_array().unwrap().len(), 1);
+        s.on_event(&json!({"id": "e2", "guild_id": "g", "name": "Film"}), false);
+        s.on_event(&json!({"id": "e1", "guild_id": "g"}), true);
+        assert_eq!(s.guild("g").unwrap().events.len(), 1);
+        assert!(s.on_sound(&json!({"sound_id": "s3", "guild_id": "g", "name": "yeni"}), false));
+        assert_eq!(s.guild("g").unwrap().sounds.len(), 3);
+        let d = s.diagnostics();
+        assert_eq!(d["redacted"], 1);
+        assert_eq!(d["voice_unknown"], 1);
     }
 
     #[test]

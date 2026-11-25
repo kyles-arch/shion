@@ -175,6 +175,7 @@ document.addEventListener("contextmenu", (e) => {
   showMenu(e, [
     { label: "⬇ İndir", fn: () => saveMedia(img.src, name) },
     { label: "🔗 Bağlantıyı kopyala", fn: () => { navigator.clipboard.writeText(bigUrl(img.src)); toast("Kopyalandı"); } },
+    ...emojiCloneItems(img),
   ]);
 }, true);
 
@@ -450,14 +451,17 @@ async function exportChannel(c) {
 /* Menü ve ayar kancaları                                              */
 /* ------------------------------------------------------------------ */
 function plusChannelItems(c, gid) {
-  return [{ label: "⬇ Kanalı yedekle", fn: () => exportChannel({ ...c, guild_id: gid || null, name: c.name || dname(c.recipients?.[0]) }) }];
+  return [...vencordChannelItems(c, gid), { label: "⬇ Kanalı yedekle", fn: () => exportChannel({ ...c, guild_id: gid || null, name: c.name || dname(c.recipients?.[0]) }) }];
 }
 function plusGuildItems(g) {
-  return [{ label: "🔊 Ses kanalı kaydı", fn: () => openVcLog(g.id) }];
+  return [{ label: "🔊 Ses kanalı kaydı", fn: () => openVcLog(g.id) }, ...discordGuildItems(g), ...vencordGuildItems(g)];
 }
 
 function plusSettings(root, sec, toggle) {
   updateSection(root);
+  discordSettings(root, sec, toggle);
+  vencordSettings(root, sec, toggle);
+  visualSettings(root, sec, toggle);
   const ms = micTestSection(root);
   // hassasiyet kaydırıcısı değişince eşik çizgisini güncelle
   root.addEventListener("input", () => ms._setThr());
@@ -507,7 +511,7 @@ function openUserVolume(u) {
   const box = h("div", "uvol");
   const cur = Math.round((cfg.userVol[u.id] ?? 1) * 100);
   box.innerHTML = `<div class="uvol-head"><img src="${avatarUrl(u, 64)}"><b>${esc(dname(u))}</b><span class="uvol-val">%${cur}</span></div>`;
-  const r = h("input"); r.type = "range"; r.min = 0; r.max = 200; r.step = 5; r.value = cur;
+  const r = h("input"); r.type = "range"; r.min = 0; r.max = 300; r.step = 5; r.value = cur;
   r.oninput = () => { box.querySelector(".uvol-val").textContent = "%" + r.value; setUserVolume(u.id, r.value / 100); };
   const reset = h("button", "btn small", "Sıfırla (%100)"); reset.onclick = () => { r.value = 100; r.oninput(); };
   box.append(r, reset, h("p", "muted", "<small>Sadece senin duyduğun sesi değiştirir; Shion açıldığında hatırlanır.</small>"));
