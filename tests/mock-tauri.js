@@ -37,7 +37,9 @@
   const accounts = [{ id: "100", username: "shion", global_name: "Shion", avatar: null }, { id: "555", username: "yanhesap", global_name: "Yan", avatar: null }];
   // Valorant: yonetici yetkisi + roller (moderasyon testleri)
   Object.assign(guilds[0], { perms: "8", my_top: 10, owner: false });
-  Object.assign(guilds[0].roles, { r1: { name: "Kurucu", color: 15158332, position: 20 }, r2: { name: "Yetkili", color: 3447003, position: 5 }, r3: { name: "Üye", color: 0, position: 1 } });
+  Object.assign(guilds[0].roles, { r1: { name: "Kurucu", color: 15158332, position: 20, permissions: "8" }, r2: { name: "Yetkili", color: 3447003, colors: { primary_color: 3447003, secondary_color: 16711935 }, position: 5, permissions: String((1n << 1n) | (1n << 13n) | (1n << 40n)), unicode_emoji: "🛡" }, r3: { name: "Üye", color: 0, position: 1, permissions: "0" }, r4: { name: "Renkli", color: 3066993, position: 3, permissions: "0" } });
+  guilds[0].roles[guilds[0].id].permissions = String((1n << 10n) | (1n << 11n));
+  guilds[0].owner_id = "999";
   for (const g of guilds) for (const c of g.channels) Object.assign(c, { manage: g === guilds[0], invite: true });
   // Gizli kanal + ses durumu ornekleri
   guilds[0].channels.push(ch("yetkili-odası", 0, { hidden: true, parent_id: guilds[0].channels[0].id }));
@@ -145,7 +147,8 @@
     deleted_log: () => [], clear_deleted_log: () => null,
     channel_info: ({ channelId }) => ({ id: channelId, name: "yetkili-odası", topic: "Sadece yetkililer", type: 0, overwrites: [{ id: "1", kind: "role", name: "Yetkili", color: 15158332, view: "allow" }], guild_name: "Valorant Türkiye" }),
     voice_devices: () => ({ inputs: ["Mikrofon (Test)"], outputs: ["Hoparlör (Test)"] }),
-    get_profile: ({ userId, guildId }) => ({ user: userId === me.id ? me : users[0], user_profile: { bio: "Merhaba! **Shion** kullanıyorum", pronouns: "o", accent_color: 7105791, banner: "abc" }, premium_since: "2023-05-01T10:00:00Z", badges: [{ id: "hypesquad", description: "HypeSquad Bravery", icon: "8a88d63823d8a71cd5e390baa45efa02" }], connected_accounts: [{ type: "steam", name: "oyuncu42", verified: true }], ...(guildId ? { guild_member: { joined_at: "2024-02-03T12:00:00Z" } } : {}) }),
+    get_profile: ({ userId, guildId }) => ({ user: userId === me.id ? me : users[0], user_profile: { bio: "Merhaba! **Shion** kullanıyorum", pronouns: "o", accent_color: 7105791, banner: "abc" }, premium_since: "2023-05-01T10:00:00Z", badges: [{ id: "hypesquad", description: "HypeSquad Bravery", icon: "8a88d63823d8a71cd5e390baa45efa02" }], connected_accounts: [{ type: "steam", name: "oyuncu42", verified: true }], ...(guildId ? { guild_member: { joined_at: "2024-02-03T12:00:00Z", nick: "Sunucu Adı", avatar: "a_gav", roles: ["r2", "r3", "r4"] }, guild_member_profile: { bio: "Sunucu biyografisi" } } : {}) }),
+    member_roles: ({ userIds }) => Object.fromEntries(userIds.map((id, i) => [id, i % 2 ? ["r4"] : ["r2", "r3"]])),
     update_profile: (a) => ({ ok: true, ...a }),
   };
   function emit(name, payload) { (listeners.get(name) || []).forEach((cb) => cb({ event: name, payload })); }

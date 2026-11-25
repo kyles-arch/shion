@@ -735,6 +735,14 @@ async fn open_dm(core: State<'_, CoreRef>, user_id: String) -> Result<Value, Str
 }
 
 /// Uye listesini (sag panel) almak icin gateway'e abone ol.
+/// Mesaj yazarlarinin sunucu rolleri (rol rengi icin). Bilinmeyenler gateway'den istenir, "member-roles" olayiyla gelir.
+#[tauri::command]
+fn member_roles(core: State<'_, CoreRef>, guild_id: String, user_ids: Vec<String>) -> Value {
+    let (known, missing) = core.store.lock().unwrap().member_roles_of(&guild_id, &user_ids);
+    gateway::request_members(&core, &guild_id, missing);
+    Value::Object(known)
+}
+
 #[tauri::command]
 fn subscribe_guild(core: State<'_, CoreRef>, guild_id: String, channel_id: String) {
     let mut channels = serde_json::Map::new();
@@ -1606,6 +1614,7 @@ fn main() {
             stop_ringing,
             set_status,
             get_profile,
+            member_roles,
             update_profile,
             open_dm,
             ack,

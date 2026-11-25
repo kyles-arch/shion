@@ -1,6 +1,6 @@
 [package]
 name = "shion"
-version = "0.4.0"
+version = "0.4.1"
 description = "Shion - hafif, Rust tabanli Discord istemcisi"
 edition = "2021"
 

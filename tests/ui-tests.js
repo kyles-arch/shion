@@ -571,9 +571,9 @@ export async function run() {
     author.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 200, clientY: 200 })); await sleep(30);
     await lastMenuClick("Rolleri düzenle"); await sleep(50);
     const items = document.querySelectorAll("#modal .role-item");
-    assert(items.length === 3, "rol sayisi " + items.length);
+    assert(items.length === 4, "rol sayisi " + items.length);
     assert(items[0].classList.contains("off"), "ustteki rol (Kurucu) kilitli olmali");
-    assert(items[2].querySelector("input").checked, "mevcut rol isaretli degil");
+    assert(items[3].querySelector("input").checked, "mevcut rol isaretli degil");
     items[1].querySelector("input").click();
     [...document.querySelectorAll("#modal .btn")].find((x) => x.textContent === "Kaydet").click(); await sleep(40);
     const r = called("mod_action").pop()[1];
@@ -1285,6 +1285,74 @@ export async function run() {
     assert(css.includes('data-uid="777"') && !css.includes("x\\\""), "kisi rengi css: " + css);
     cfg.userColors = {}; renderUserColors();
     openStage(); assert(q("#modal-body .stage"), "sahne acilmadi"); closeModal();
+  });
+
+  await test("sunucu 1: rol renkleri (gradyan, en ust renkli rol, renksiz rol)", async () => {
+    const g = S.guilds[0];
+    assert(topRoleColor(g, ["r3", "r2"]) === "#3498db", "en ust renkli rol: " + topRoleColor(g, ["r3", "r2"]));
+    assert(topRoleColor(g, ["r3"]) === null, "renksiz rol renk verdi");
+    assert(topRoleColor(g, ["r4", "r1"]) === intColor(15158332), "kurucu rengi");
+    assert(topRoleColor(g, ["yok"]) === null, "bilinmeyen rol");
+    const st = roleNameStyle(g, ["r2"]);
+    assert(st.gradient && st.gradient.includes("#3498db") && st.gradient.includes("#ff00ff"), "gradyan: " + JSON.stringify(st));
+    assert(!roleNameStyle(g, ["r4"]).gradient, "duz renk gradyan oldu");
+  });
+
+  await test("sunucu 2: mesaj yazarlari rol rengi alir", async () => {
+    const g = S.guilds[0]; S.view = g.id;
+    await openChannel({ ...g.channels[1], guild_id: g.id }); await sleep(200);
+    const authors = [...document.querySelectorAll("#messages .msg[data-uid] .head .author")];
+    assert(authors.length > 0, "yazar yok");
+    assert(called("member_roles").length >= 1, "member_roles istenmedi");
+    const painted = authors.filter((a) => a.style.color || a.classList.contains("role-grad"));
+    assert(painted.length === authors.filter((a) => !a.classList.contains("styled-name")).length, `boyanan ${painted.length}/${authors.length}`);
+    const uid = document.querySelector("#messages .msg[data-uid]").dataset.uid;
+    window.__mock.emit("member-roles", { guild_id: g.id, members: { [uid]: ["r1"] } }); await sleep(20);
+    const a = document.querySelector(`#messages .msg[data-uid="${uid}"] .head .author`);
+    assert(!a || a.style.color === "rgb(231, 76, 60)" || a.classList.contains("styled-name"), "olayla guncellenmedi: " + a?.style.color);
+  });
+
+  await test("sunucu 3: profil karti sunucu profili, roller, yetkiler", async () => {
+    const g = S.guilds[0];
+    const anchor = [...document.querySelectorAll("#messages .msg .av[data-pop]")].find((x) => x.dataset.pop !== S.me.id);
+    profileCache.clear(); await openPopout(anchor, anchor.dataset.pop); await sleep(80);
+    const pop = q(".popout");
+    assert(pop, "kart acilmadi");
+    assert(pop.querySelector(".pc-name").textContent === "Sunucu Adı", "sunucu takma adi: " + pop.querySelector(".pc-name").textContent);
+    assert(pop.querySelector(".pc-av img").src.includes(`/guilds/${g.id}/users/`), "sunucu avatari");
+    assert(pop.querySelector(".pc-bio").textContent.includes("Sunucu biyografisi"), "sunucu biyografisi");
+    const chips = [...pop.querySelectorAll(".role-chip")].map((c) => c.textContent);
+    assert(chips.length === 3 && chips[0].includes("Yetkili") && chips[2].includes("Üye"), "roller: " + chips);
+    const perms = pop.querySelector(".pc-perms");
+    assert(perms && perms.textContent.includes("Üyeleri at") && perms.textContent.includes("Zaman aşımı uygula") && perms.textContent.includes("Mesaj gönder"), "yetkiler: " + perms?.textContent);
+    const tog = pop.querySelector(".srv-toggle"); tog.click();
+    assert(pop.querySelector(".pc-name").textContent !== "Sunucu Adı" && !pop.querySelector(".pc-av img").src.includes("/guilds/"), "genel profile donmedi");
+    tog.click();
+    assert(pop.querySelector(".pc-name").textContent === "Sunucu Adı", "sunucu profiline donmedi");
+    perms.open = true; await sleep(30);
+    const r = pop.getBoundingClientRect();
+    assert(r.top >= 7 && r.bottom <= innerHeight + 1 && r.right <= innerWidth + 1, "kart ekrandan tasiyor: " + JSON.stringify([r.top, r.bottom, innerHeight]));
+    closePopout();
+  });
+
+  await test("sunucu 4: sahip ve yonetici yetkisi", async () => {
+    const g = S.guilds[0];
+    assert(memberPerms(g, "999", []).owner, "sahip");
+    const p = memberPerms(g, "5", ["r1"]); assert(p.all && !p.owner, "yonetici");
+    const n = memberPerms(g, "5", ["r3"]); assert(!n.all && (n.bits & (1n << 11n)), "everyone izni");
+  });
+
+  await test("sunucu 5: acilir pencereler ekrana sigar", async () => {
+    const items = Array.from({ length: 60 }, (_, i) => ({ label: "Secenek " + i, fn: () => {} }));
+    showMenu({ clientX: innerWidth - 20, clientY: innerHeight - 20 }, items); await sleep(60);
+    const m = q(".menu"), r = m.getBoundingClientRect();
+    assert(r.bottom <= innerHeight + 1 && r.top >= 0 && r.right <= innerWidth + 1 && m.scrollHeight > m.clientHeight, "menu tasiyor: " + JSON.stringify([r.top, r.bottom, innerHeight]));
+    m.remove();
+    const big = h("div", "", Array.from({ length: 80 }, (_, i) => `<p>satir ${i}</p>`).join(""));
+    openModal("Uzun", big); await sleep(30);
+    const box = q(".modal-box").getBoundingClientRect(), body = q("#modal-body");
+    assert(box.bottom <= innerHeight + 1 && box.top >= 0 && body.scrollHeight > body.clientHeight, "modal tasiyor: " + JSON.stringify([box.top, box.bottom, innerHeight]));
+    closeModal();
   });
 
   await test("yatay tasma yok", async () => {

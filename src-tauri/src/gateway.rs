@@ -253,8 +253,12 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
         "GUILD_MEMBERS_CHUNK" => {
             let gid = d["guild_id"].as_str().unwrap_or("").to_string();
             let mut updates = vec![];
+            let mut roles = serde_json::Map::new();
             for m in arr(&d["members"]) {
                 s.cache_member(&gid, m);
+                if let Some(id) = m["user"]["id"].as_str() {
+                    roles.insert(id.to_string(), m["roles"].clone());
+                }
                 let uid = m["user"]["id"].as_str().unwrap_or("");
                 if let Some(v) = s.guild(&gid).and_then(|g| g.voice_states.get(uid)).cloned() {
                     let mut sum = s.voice_summary(&v);
@@ -265,6 +269,9 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             drop(s);
             for u in updates {
                 let _ = app.emit("voice-state", u);
+            }
+            if !roles.is_empty() {
+                let _ = app.emit("member-roles", json!({"guild_id": gid, "members": roles}));
             }
             return;
         }
@@ -329,6 +336,12 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             }
         }
         "GUILD_MEMBER_UPDATE" => {
+            if let Some(gid) = d["guild_id"].as_str() {
+                s.cache_member(gid, d);
+                if let Some(id) = d["user"]["id"].as_str() {
+                    let _ = app.emit("member-roles", json!({"guild_id": gid, "members": {id: d["roles"].clone()}}));
+                }
+            }
             if d["user"]["id"].as_str() == Some(s.me_id.as_str()) {
                 let roles: Vec<String> = arr(&d["roles"]).iter().filter_map(|r| r.as_str().map(String::from)).collect();
                 if let Some(g) = s.guild_mut(d["guild_id"].as_str().unwrap_or("")) {
@@ -340,6 +353,11 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
         }
         "MESSAGE_CREATE" => {
             let ch = d["channel_id"].as_str().unwrap_or("").to_string();
+            if let (Some(gid), true) = (d["guild_id"].as_str(), d["member"].is_object()) {
+                let mut m = d["member"].clone();
+                m["user"] = d["author"].clone();
+                s.cache_member(gid, &m);
+            }
             s.put_messages(&ch, vec![d.clone()]);
             s.touch_last(&ch, &d["id"]);
             if d["author"]["id"].as_str() == Some(s.me_id.as_str()) {
@@ -486,6 +504,16 @@ fn dispatch(app: &AppHandle, core: &CoreRef, t: &str, d: &Value) {
             }
         }
         "GUILD_MEMBER_LIST_UPDATE" => {
+            if let Some(gid) = d["guild_id"].as_str() {
+                for op in arr(&d["ops"]) {
+                    let items = op["items"].as_array().cloned().unwrap_or_else(|| vec![op["item"].clone()]);
+                    for it in &items {
+                        if it["member"].is_object() {
+                            s.cache_member(gid, &it["member"]);
+                        }
+                    }
+                }
+            }
             let _ = app.emit("member-list", d);
         }
         "VOICE_STATE_UPDATE" => {
@@ -611,7 +639,7 @@ async fn fetch_my_roles(app: AppHandle, core: CoreRef, token: String, me: String
     }
 }
 /// Bilinmeyen kullanicilari gateway'den iste (op 8, en fazla 100'er).
-fn request_members(core: &CoreRef, gid: &str, ids: Vec<String>) {
+pub fn request_members(core: &CoreRef, gid: &str, ids: Vec<String>) {
     if ids.is_empty() {
         return;
     }

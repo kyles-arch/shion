@@ -250,7 +250,7 @@ function renderUserColors() {
   let css = "";
   for (const [id, col] of Object.entries(cfg.userColors || {})) {
     if (!/^\d+$/.test(id) || !/^#[0-9a-f]{6}$/i.test(col)) continue;
-    css += `.msg[data-uid="${id}"]{box-shadow:inset 3px 0 0 ${col};background:color-mix(in srgb,${col} 7%,transparent)}.msg[data-uid="${id}"] .author{color:${col}}\n`;
+    css += `.msg[data-uid="${id}"]{box-shadow:inset 3px 0 0 ${col};background:color-mix(in srgb,${col} 7%,transparent)}.msg[data-uid="${id}"] .author{color:${col} !important;-webkit-text-fill-color:${col}}\n`;
   }
   let s = $("#user-colors"); if (!s) { s = h("style"); s.id = "user-colors"; document.head.append(s); }
   if (s.textContent !== css) s.textContent = css;

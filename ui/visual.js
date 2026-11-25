@@ -929,7 +929,7 @@ document.addEventListener("keydown", (e) => { if (e.ctrlKey && e.shiftKey && e.k
 /* ================================================================== */
 /* Yenilikler penceresi (her sürümde bir kez)                          */
 /* ================================================================== */
-const SHION_VERSION = "0.4.0";
+const SHION_VERSION = "0.4.1";
 const WHATS_NEW = [
   ["🎨", "Görünüm stüdyosu", "Ctrl+Shift+T — hazır görünümler, özel tema, cam, parlama, avatar şekilleri", () => openStudio()],
   ["🌌", "Hareketli arka planlar", "Yıldız alanı, kar, sakura, ateş böcekleri, Matrix, aurora, neon ızgara…", () => openStudio()],

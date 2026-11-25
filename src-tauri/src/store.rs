@@ -54,6 +54,8 @@ pub struct Guild {
     pub members_known: bool,
     /// kullanici id -> sunucu takma adi
     pub nicks: HashMap<String, String>,
+    /// kullanici id -> sunucudaki rol id'leri (mesaj yazarlari icin rol rengi)
+    pub member_roles: HashMap<String, Vec<String>>,
     /// Planlanmis etkinlikler
     pub events: Vec<Value>,
     /// Ses tahtasi sesleri
@@ -248,6 +250,9 @@ impl Store {
             self.cache_user(&m["user"]);
         }
         if let Some(g) = self.guild_mut(gid) {
+            if let Some(rs) = m["roles"].as_array() {
+                g.member_roles.insert(uid.clone(), rs.iter().filter_map(|r| r.as_str().map(String::from)).collect());
+            }
             match m["nick"].as_str() {
                 Some(n) => {
                     g.nicks.insert(uid, n.to_string());
@@ -257,6 +262,23 @@ impl Store {
                 }
             }
         }
+    }
+
+    /// Bilinen uye rollerini dondur; bilinmeyen ve henuz istenmemis olanlari (op 8 icin) ayir.
+    pub fn member_roles_of(&mut self, gid: &str, ids: &[String]) -> (Map<String, Value>, Vec<String>) {
+        let mut known = Map::new();
+        let mut missing = vec![];
+        let Some(g) = self.guild(gid) else { return (known, missing) };
+        for id in ids.iter().take(200) {
+            match g.member_roles.get(id) {
+                Some(r) => {
+                    known.insert(id.clone(), json!(r));
+                }
+                None => missing.push(id.clone()),
+            }
+        }
+        missing.retain(|id| self.requested_users.insert(format!("{gid}:{id}")));
+        (known, missing)
     }
 
     /// Ses kanalinda olup bilgisi bilinmeyen kullanicilar (henuz istenmemis olanlar).
@@ -390,7 +412,7 @@ impl Store {
                 let roles: Map<String, Value> = g
                     .roles
                     .values()
-                    .map(|r| (st(&r["id"]), json!({"name": r["name"], "color": r["color"], "position": r["position"]})))
+                    .map(|r| (st(&r["id"]), json!({"name": r["name"], "color": r["color"], "colors": r["colors"], "position": r["position"], "permissions": r["permissions"], "icon": r["icon"], "unicode_emoji": r["unicode_emoji"], "hoist": r["hoist"], "managed": r["managed"]})))
                     .collect();
                 let threads: Vec<Value> = g
                     .threads
@@ -418,7 +440,7 @@ impl Store {
                     .map(|x| json!({"sound_id": x["sound_id"], "name": x["name"], "emoji_name": x["emoji_name"], "emoji_id": x["emoji_id"], "volume": x["volume"]}))
                     .collect();
                 let my_top = g.my_roles.iter().filter_map(|r| g.roles.get(r)).map(|r| r["position"].as_i64().unwrap_or(0)).max().unwrap_or(0);
-                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "stickers": stickers, "voice_states": voice, "sounds": sounds, "events": g.events.len(), "meta": g.meta})
+                json!({"id": g.id, "name": g.name, "icon": g.icon, "perms": base.to_string(), "owner": g.owner_id == self.me_id, "owner_id": g.owner_id, "my_top": my_top, "channels": chans, "roles": roles, "threads": threads, "emojis": emojis, "stickers": stickers, "voice_states": voice, "sounds": sounds, "events": g.events.len(), "meta": g.meta})
             })
             .collect()
     }
@@ -796,6 +818,21 @@ impl Store {
 #[cfg(test)]
 mod collectible_tests {
     use super::*;
+    #[test]
+    fn member_roles_cached_and_requested_once() {
+        let mut s = Store::default();
+        s.load_guild(&json!({"id": "g", "name": "G", "roles": [{"id": "r1", "name": "Mod", "color": 255, "colors": {"primary_color": 255, "secondary_color": 16711680}, "position": 2, "permissions": "8"}], "channels": []}), None);
+        s.cache_member("g", &json!({"user": {"id": "u1", "username": "a"}, "roles": ["r1"], "nick": "Ali"}));
+        let ids = vec!["u1".to_string(), "u2".to_string()];
+        let (known, missing) = s.member_roles_of("g", &ids);
+        assert_eq!(known["u1"], json!(["r1"]));
+        assert_eq!(missing, vec!["u2".to_string()]);
+        let (_, again) = s.member_roles_of("g", &ids);
+        assert!(again.is_empty(), "ayni uye iki kez istenmemeli");
+        let g = s.guild("g").unwrap();
+        assert_eq!(g.roles["r1"]["colors"]["secondary_color"], json!(16711680));
+    }
+
     #[test]
     fn slim_user_keeps_collectibles() {
         let u = json!({"id": "1", "username": "a", "email": "x", "avatar_decoration_data": {"asset": "a_1"}, "primary_guild": {"tag": "SHN"}, "collectibles": null});
